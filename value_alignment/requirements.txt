@@ -1,0 +1,7 @@
+torch
+transformers
+datasets
+trl
+peft
+accelerate
+bitsandbytes; platform_system != "Darwin"
