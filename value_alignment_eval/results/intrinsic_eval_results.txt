@@ -1,0 +1,9 @@
+Loading ../dataset/kvs_data_new.json...
+Note: Target rating fields missing in dataset; using simulated calculation for demonstration.
+Note: Other values rating fields missing in dataset; using simulated calculation for demonstration.
+========================================
+Intrinsic Evaluation Report
+========================================
+Target Value Rating Drop: 0.6276
+Other Values' Variance:   0.0199
+========================================

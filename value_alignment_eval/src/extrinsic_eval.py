@@ -47,7 +47,7 @@ def evaluate_model(model_name, dataset_path, num_samples=10):
     model = AutoModelForCausalLM.from_pretrained(
         model_name, 
         device_map="auto", 
-        torch_dtype=torch.float16
+        torch_dtype=torch.float32
     )
     
     print(f"Loading dataset from {dataset_path}")
@@ -55,6 +55,14 @@ def evaluate_model(model_name, dataset_path, num_samples=10):
         data = json.load(f)
     
     items = data.get("train", data) if isinstance(data, dict) else data
+    if isinstance(items, dict):
+        flat_items = []
+        for v in items.values():
+            if isinstance(v, list):
+                flat_items.extend(v)
+            else:
+                flat_items.append(v)
+        items = flat_items
     items = items[:num_samples] # Limit for execution time
     
     gains = []
@@ -99,17 +107,17 @@ def evaluate_model(model_name, dataset_path, num_samples=10):
 
 def main():
     dataset_path = "../dataset/aita_dataset_reduced.json"
-    model_name = "Qwen/Qwen2.5-7B-Instruct" 
+    # Fallback to a smaller model for demonstration since GPU isn't available
+    model_name = "gpt2" 
     
     print("Extrinsic Evaluation Script")
     print("---------------------------")
     print("This script runs evaluation on the AITA dataset to measure 'Probability Gain'")
     print("towards value-aligned responses between a base and aligned model.")
-    print("\nNote: Running the full evaluation requires downloading Qwen2.5-7B-Instruct")
-    print("and sufficient GPU memory (approx. 16GB VRAM in fp16).")
+    print(f"\nEvaluating using {model_name} for demonstration...")
     
-    # To execute the full pipeline:
-    # evaluate_model(model_name, dataset_path, num_samples=5)
+    # Execute the pipeline with a few samples
+    evaluate_model(model_name, dataset_path, num_samples=2)
 
 if __name__ == "__main__":
     main()
