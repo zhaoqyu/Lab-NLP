@@ -1,17 +1,16 @@
-# Lab NLP: Value Alignment Evaluation
+# Value Alignment Evaluation
 
-This repository contains the evaluation environment and scripts for the value alignment project.
+This directory contains the specific evaluation environment and scripts for the value alignment project, kept separate from the main repository files.
 
 ## Directory Structure
 
-- `data/`: Contains the datasets used for evaluation.
-  - `aita_dataset_reduced.json`: Used for extrinsic evaluation.
-  - `kvs_data_new.json`: Used for intrinsic evaluation.
 - `src/`: Contains the evaluation scripts.
   - `intrinsic_eval.py`: Evaluates the "Target Value Rating Drop" and "Other Values' Variance".
   - `extrinsic_eval.py`: Evaluates "Probability Gain" and downstream behavioral changes using Causal LM.
 - `setup_machiavelli.sh`: Script to clone and setup the MACHIAVELLI benchmark.
 - `requirements.txt`: Python dependencies required for the project.
+
+**Note:** The evaluation scripts expect the datasets to be located in the `dataset/` directory at the root of the repository (i.e. `../dataset/`).
 
 ## Setup
 
