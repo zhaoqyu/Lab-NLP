@@ -65,6 +65,12 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Optional cap per value. 0 means no cap.",
     )
+    parser.add_argument(
+        "--single-file",
+        type=Path,
+        default=None,
+        help="Optional path for writing all converted rows into one JSONL file instead of train/eval/test splits.",
+    )
     return parser.parse_args()
 
 
@@ -136,6 +142,15 @@ def main() -> None:
         raw = json.load(handle)
 
     rows = convert_examples(raw, args.values, args.max_per_value, rng)
+    if args.single_file is not None:
+        args.single_file.parent.mkdir(parents=True, exist_ok=True)
+        write_jsonl(args.single_file, rows)
+        counts: dict[str, int] = {}
+        for row in rows:
+            counts[row["value"]] = counts.get(row["value"], 0) + 1
+        print(json.dumps({"total": len(rows), "output": str(args.single_file), "values": counts}, indent=2))
+        return
+
     train_rows, eval_rows, test_rows = split_rows(rows, args.eval_ratio, args.test_ratio)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
