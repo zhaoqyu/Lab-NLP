@@ -44,8 +44,8 @@ def calculate_other_values_variance(data, other_base_key="other_values_base_rati
     return np.mean(variances)
 
 def main():
-    print("Loading data/kvs_data_new.json...")
-    with open("data/kvs_data_new.json", "r") as f:
+    print("Loading ../dataset/kvs_data_new.json...")
+    with open("../dataset/kvs_data_new.json", "r") as f:
         data = json.load(f)
     
     # Extract training examples for evaluation

@@ -98,7 +98,7 @@ def evaluate_model(model_name, dataset_path, num_samples=10):
         print("No gains could be calculated.")
 
 def main():
-    dataset_path = "data/aita_dataset_reduced.json"
+    dataset_path = "../dataset/aita_dataset_reduced.json"
     model_name = "Qwen/Qwen2.5-7B-Instruct" 
     
     print("Extrinsic Evaluation Script")
