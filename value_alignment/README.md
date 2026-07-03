@@ -36,6 +36,15 @@ python value_alignment/prepare_aita_dpo.py \
   --output-dir value_alignment/data/aita_dpo
 ```
 
+For Mike's first inspectable batch:
+
+```bash
+python value_alignment/prepare_aita_dpo.py \
+  --values Security_personal Benevolence_caring Universalism_concern \
+  --max-per-value 10 \
+  --single-file value_alignment/examples/first_batch_aita_preferences.jsonl
+```
+
 This creates:
 
 ```text
@@ -50,6 +59,38 @@ value_alignment/data/aita_dpo/test.jsonl
 python value_alignment/prepare_kvs_eval.py \
   --split test \
   --output value_alignment/data/kvs_test_eval.jsonl
+```
+
+## Start Synthetic Teacher Generation
+
+Dry-run teacher jobs first, so the team can inspect prompts before spending API or cluster budget:
+
+```bash
+python value_alignment/generate_synthetic_preferences.py \
+  --values Security_personal Benevolence_caring Universalism_concern \
+  --examples-per-value 2 \
+  --personas-per-example 2 \
+  --dry-run \
+  --output value_alignment/examples/teacher_prompt_jobs_dryrun.jsonl
+```
+
+When a teacher model/API is available:
+
+```bash
+export OPENAI_API_KEY=...
+python value_alignment/generate_synthetic_preferences.py \
+  --model gpt-4.1-mini \
+  --values Security_personal Benevolence_caring Universalism_concern \
+  --examples-per-value 20 \
+  --personas-per-example 2 \
+  --output value_alignment/data/synthetic_preferences.jsonl
+```
+
+Validate any preference-pair file:
+
+```bash
+python value_alignment/validate_preference_pairs.py \
+  --input value_alignment/examples/first_batch_aita_preferences.jsonl
 ```
 
 ## Train Standard DPO
