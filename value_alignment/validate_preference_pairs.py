@@ -16,6 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--allow-dry-run", action="store_true")
+    parser.add_argument("--require-rationale", action="store_true")
     return parser.parse_args()
 
 
@@ -48,6 +49,9 @@ def main() -> None:
             for field in ["prompt", "chosen", "rejected"]:
                 if not pair.get(field) or not str(pair[field]).strip():
                     errors.append(f"line {line_no}: missing or empty {field}")
+            rationale = pair.get("public_rationale") or row.get("public_rationale")
+            if args.require_rationale and not str(rationale or "").strip():
+                errors.append(f"line {line_no}: missing public_rationale")
 
             chosen_label = label_of(pair.get("chosen", ""))
             rejected_label = label_of(pair.get("rejected", ""))

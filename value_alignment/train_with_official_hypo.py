@@ -9,6 +9,7 @@ we can train on the local AITA JSONL files used in this lab project.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -18,6 +19,8 @@ from datasets import load_dataset
 from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from value_alignment.model_utils import resolve_model_name
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OFFICIAL_HYPO_DIR = Path(os.environ.get("HYPO_REPO", PROJECT_ROOT / "third_party" / "2026_ICLR_HyPO"))
@@ -25,9 +28,11 @@ OFFICIAL_HYPO_DIR = Path(os.environ.get("HYPO_REPO", PROJECT_ROOT / "third_party
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, default=None, help="Optional JSON config file. CLI args override config values.")
     parser.add_argument("--method", choices=["dpo", "hypo"], default="hypo")
     parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct")
     parser.add_argument("--ref-model", default=None)
+    parser.add_argument("--model-aliases", type=Path, default=Path("value_alignment/configs/model_aliases.json"))
     parser.add_argument("--train-file", type=Path, default=Path("value_alignment/data/aita_dpo/train.jsonl"))
     parser.add_argument("--eval-file", type=Path, default=Path("value_alignment/data/aita_dpo/eval.jsonl"))
     parser.add_argument("--output-dir", type=Path, default=Path("value_alignment/checkpoints"))
@@ -41,7 +46,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-length", type=int, default=2048)
     parser.add_argument("--max-prompt-length", type=int, default=1536)
     parser.add_argument("--no-lora", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.config is not None:
+        config = json.loads(args.config.read_text(encoding="utf-8"))
+        defaults = vars(parser.parse_args([]))
+        for key, value in config.items():
+            attr = key.replace("-", "_")
+            if attr == "lora":
+                if getattr(args, "no_lora") == defaults.get("no_lora"):
+                    args.no_lora = not bool(value)
+                continue
+            if hasattr(args, attr) and getattr(args, attr) == defaults.get(attr):
+                setattr(args, attr, value)
+    for path_attr in ["train_file", "eval_file", "output_dir", "model_aliases"]:
+        setattr(args, path_attr, Path(getattr(args, path_attr)))
+    return args
 
 
 def main() -> None:
@@ -61,7 +80,10 @@ def main() -> None:
         data_files={"train": str(args.train_file), "eval": str(args.eval_file)},
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
+    model_name = resolve_model_name(args.model, args.model_aliases)
+    ref_model_name = resolve_model_name(args.ref_model, args.model_aliases) if args.ref_model else None
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     if tokenizer.bos_token is None:
@@ -72,11 +94,11 @@ def main() -> None:
         "torch_dtype": dtype,
         "device_map": "auto" if torch.cuda.is_available() else None,
     }
-    model = AutoModelForCausalLM.from_pretrained(args.model, **model_kwargs)
+    model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
 
     ref_model = None
-    if args.ref_model:
-        ref_model = AutoModelForCausalLM.from_pretrained(args.ref_model, **model_kwargs)
+    if ref_model_name:
+        ref_model = AutoModelForCausalLM.from_pretrained(ref_model_name, **model_kwargs)
 
     peft_config = None
     if not args.no_lora:
