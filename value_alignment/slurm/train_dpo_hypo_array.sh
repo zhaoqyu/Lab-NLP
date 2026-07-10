@@ -98,9 +98,16 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-4}}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
+for DATA_FILE in "$TRAIN_FILE" "$EVAL_FILE"; do
+  if [[ ! -f "$DATA_FILE" ]]; then
+    echo "AITA training split not found: $DATA_FILE" >&2
+    echo "Generate it before submitting with:" >&2
+    echo "  python value_alignment/prepare_aita_dpo.py --output-dir value_alignment/data/aita_dpo" >&2
+    exit 1
+  fi
+done
+
 for REQUIRED_FILE in \
-  "$TRAIN_FILE" \
-  "$EVAL_FILE" \
   "$HYPO_REPO/hypo_config.py" \
   "$HYPO_REPO/hypo_trainer.py"; do
   if [[ ! -f "$REQUIRED_FILE" ]]; then
