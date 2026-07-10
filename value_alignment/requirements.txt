@@ -4,4 +4,7 @@ datasets
 trl
 peft
 accelerate
+sentencepiece
+protobuf
+huggingface_hub
 bitsandbytes; platform_system != "Darwin"

@@ -52,6 +52,26 @@ PERSONAS = [
         "description": "An autonomy-focused person who values self-direction, boundaries, and personal agency.",
         "strong_values": ["Self_direction_action", "Self_direction_thought"],
     },
+    {
+        "id": "rule_respecting_citizen",
+        "description": "A rule-oriented person who values social order, clear norms, and predictable conduct.",
+        "strong_values": ["Conformity_rules", "Security_societal", "Tradition"],
+    },
+    {
+        "id": "achievement_oriented_professional",
+        "description": "A goal-driven person who values competence, responsibility, and successful outcomes.",
+        "strong_values": ["Achievement", "Benevolence_dependability"],
+    },
+    {
+        "id": "environmental_universalist",
+        "description": "A broad-concern person who values nature, equality, tolerance, and long-term collective welfare.",
+        "strong_values": ["Universalism_nature", "Universalism_concern", "Universalism_tolerance"],
+    },
+    {
+        "id": "dignity_and_face_preserver",
+        "description": "A socially careful person who values dignity, reputation, and avoiding unnecessary humiliation.",
+        "strong_values": ["Face", "Conformity_interpersonal"],
+    },
 ]
 
 

@@ -6,11 +6,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import statistics
+import csv
 from collections import defaultdict
 from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from value_alignment.model_utils import resolve_model_name
 
 
 RATING_RE = re.compile(r"[1-6]")
@@ -19,8 +23,10 @@ RATING_RE = re.compile(r"[1-6]")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
+    parser.add_argument("--model-aliases", type=Path, default=Path("value_alignment/configs/model_aliases.json"))
     parser.add_argument("--eval-file", type=Path, default=Path("value_alignment/data/kvs_test_eval.jsonl"))
     parser.add_argument("--output", type=Path, default=Path("value_alignment/results/kvs_scores.json"))
+    parser.add_argument("--output-csv", type=Path, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=4)
     return parser.parse_args()
 
@@ -34,13 +40,14 @@ def extract_rating(text: str) -> int | None:
 
 def main() -> None:
     args = parse_args()
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
+    model_name = resolve_model_name(args.model, args.model_aliases)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
-        args.model,
+        model_name,
         torch_dtype=dtype,
         device_map="auto" if torch.cuda.is_available() else None,
     )
@@ -70,13 +77,22 @@ def main() -> None:
         value: {
             "count": len(scores),
             "mean_rating": sum(scores) / len(scores) if scores else None,
+            "std_rating": statistics.pstdev(scores) if len(scores) > 1 else 0.0,
         }
         for value, scores in sorted(by_value.items())
     }
-    result = {"summary": summary, "rows": scored}
+    result = {"model": model_name, "summary": summary, "rows": scored}
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    if args.output_csv is not None:
+        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
+        fields = ["value", "category", "level1", "sentence", "rating", "generated"]
+        with args.output_csv.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            for row in scored:
+                writer.writerow({field: row.get(field) for field in fields})
     print(json.dumps(summary, indent=2))
 
 
