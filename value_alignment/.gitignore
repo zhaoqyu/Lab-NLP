@@ -2,3 +2,5 @@ data/
 results/
 checkpoints/
 __pycache__/
+slurm_logs/*
+!slurm_logs/.gitkeep
