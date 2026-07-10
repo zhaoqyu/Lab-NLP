@@ -34,6 +34,11 @@ Clone the official HyPO implementation:
 ```bash
 mkdir -p third_party
 git clone https://github.com/tmllab/2026_ICLR_HyPO.git third_party/2026_ICLR_HyPO
+python value_alignment/prepare_aita_dpo.py \
+  --values Security_personal Benevolence_caring Universalism_concern Self_direction_action \
+  --output-dir value_alignment/data/aita_dpo
+python value_alignment/validate_preference_pairs.py \
+  --input value_alignment/data/aita_dpo/train.jsonl
 ```
 
 Or point to an existing clone:
