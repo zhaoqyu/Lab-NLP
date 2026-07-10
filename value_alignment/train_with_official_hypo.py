@@ -2,7 +2,7 @@
 """Train standard DPO or HyPO using the official HyPO trainer code.
 
 This script imports `DPOTrainer` and `DPOConfig` from the official repository
-cloned at `work/2026_ICLR_HyPO`. It avoids the Alignment Handbook launcher so
+cloned at `third_party/2026_ICLR_HyPO`. It avoids the Alignment Handbook launcher so
 we can train on the local AITA JSONL files used in this lab project.
 """
 

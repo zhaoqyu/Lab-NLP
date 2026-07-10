@@ -192,6 +192,76 @@ python value_alignment/train_with_official_hypo.py \
 
 The wrapper calls the official HyPO `DPOTrainer`; our code does not reimplement the core algorithm.
 
+## SLURM Training on Marvin
+
+The job-array script runs all six model/method combinations:
+
+```text
+array 0: qwen2.5-7b  + DPO
+array 1: qwen2.5-7b  + HyPO
+array 2: mistral-7b  + DPO
+array 3: mistral-7b  + HyPO
+array 4: llama3.1-8b + DPO
+array 5: llama3.1-8b + HyPO
+```
+
+It requests one GPU, 64 GB RAM, four CPUs, and 24 hours from
+`mlgpu_medium`. At most two array tasks run concurrently.
+
+Prepare the environment once on the login node:
+
+```bash
+cd /path/to/Lab-NLP
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r value_alignment/requirements.txt
+mkdir -p third_party
+git clone https://github.com/tmllab/2026_ICLR_HyPO.git third_party/2026_ICLR_HyPO
+```
+
+Submit only Qwen DPO and HyPO first:
+
+```bash
+sbatch --array=0-1 value_alignment/slurm/train_dpo_hypo_array.sh
+```
+
+Submit the complete comparison after the Qwen jobs pass:
+
+```bash
+sbatch value_alignment/slurm/train_dpo_hypo_array.sh
+```
+
+Useful overrides can be supplied with `--export`. This example creates a
+shorter Qwen HyPO smoke test in a separate output directory:
+
+```bash
+sbatch \
+  --array=1 \
+  --export=ALL,EPOCHS=0.05,MAX_LENGTH=1024,MAX_PROMPT_LENGTH=768,RUN_TAG=smoke \
+  value_alignment/slurm/train_dpo_hypo_array.sh
+```
+
+Common overrides are:
+
+```text
+VENV_PATH=/path/to/venv
+HYPO_REPO=/path/to/2026_ICLR_HyPO
+HF_HOME=/path/to/huggingface/cache
+OUTPUT_ROOT=/path/to/checkpoints
+TRAIN_FILE=/path/to/train.jsonl
+EVAL_FILE=/path/to/eval.jsonl
+EPOCHS=1.0
+BATCH_SIZE=1
+GRAD_ACCUM=8
+LEARNING_RATE=1e-5
+RUN_TAG=experiment-name
+```
+
+Llama 3.1 is gated on Hugging Face, so accept its model license and authenticate
+with `hf auth login` before submitting array tasks 4 and 5. SLURM `.out`, `.err`,
+and per-run logs are written to `value_alignment/slurm_logs/`; model outputs go
+to `value_alignment/checkpoints/slurm/` by default.
+
 ## DPO vs HyPO Difference
 
 Standard DPO:
