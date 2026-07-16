@@ -1,49 +1,47 @@
-# Value Alignment Evaluation
+# Value Alignment Evaluation Suite
 
-This directory isolates the evaluation scripts and environments developed for the Value Alignment project. It focuses strictly on assessing both the intrinsic shifts in moral representation and the extrinsic behavioral changes in the aligned model.
+This directory contains the professional, robust evaluation suite developed for assessing the Hybrid Direct Preference Optimization (HyDPO) model alignment. It focuses on large-scale metric computation over SLURM clusters, ensuring accurate and reproducible calculations of our target objectives.
 
-## Directory and File Breakdown
+## Directory and Script Breakdown
 
-Here is a highly detailed breakdown of what each file in this folder does and how to execute it.
+### 1. Intrinsic Evaluation: KVS Scores
 
-### 1. `src/intrinsic_eval.py`
-**Purpose:** Calculates internal shifts in the model's value representation.
-- **What it runs:** It parses the JSON representation of model outputs from the `kvs_data_new.json` dataset.
-- **Metrics Calculated:** 
-  - *Target Value Rating Drop:* How much the model decreases its agreement with negative or manipulated values.
-  - *Other Values' Variance:* A stability check ensuring that positive values are not forgotten.
-- **How to run:** `python src/intrinsic_eval.py`
+**`evaluate_kvs_survey.py`**
+- **Purpose:** Extracts scalar ratings (1-6) from generated responses given KVS value-statement prompts.
+- **Features:** Integrates with `AutoModelForCausalLM` and computes single-token or exact-match generations safely without gradients. Supports CSV and JSON metric dumping.
+- **Usage:**
+  ```bash
+  python evaluate_kvs_survey.py --model qwen2.5-7b --eval-file ../dataset/kvs_test_eval.jsonl --output results/kvs_base_scores.json
+  ```
 
-### 2. `src/extrinsic_eval.py`
-**Purpose:** Evaluates the model's behavior in complex, real-world social dilemmas.
-- **What it runs:** It loads the language model (e.g., `Qwen2.5-7B-Instruct`), dynamically tokenizes responses, and computes forward passes (without gradients) on scenarios from the `aita_dataset_reduced.json` dataset.
+**`evaluation/compare_kvs_results.py`**
+- **Purpose:** Compares the JSON outputs of a base model against a trained model to calculate global alignment shifts.
 - **Metrics Calculated:**
-  - *Probability Gain:* The mathematical shift in probability mass towards the ethical or value-aligned stance (e.g., predicting "NTA" instead of "YTA").
-- **How to run:** `python src/extrinsic_eval.py`
+  - *Target Value Rating Drop:* Evaluates the successful suppression of misaligned behavior across the target value array.
+  - *Other Values' Variance:* Calculates variance across neutral/unmanipulated axes to ensure no catastrophic forgetting occurs.
+- **Usage:**
+  ```bash
+  python evaluation/compare_kvs_results.py --base results/kvs_base_scores.json --trained results/kvs_hypo_scores.json --target-values Security_personal
+  ```
 
-### 3. `setup_machiavelli.sh`
-**Purpose:** Prepares the advanced MACHIAVELLI behavioral benchmark.
-- **What it runs:** It executes a series of bash commands to clone the official MACHIAVELLI repository (`aypan17/machiavelli`), initializes an isolated Python virtual environment, and installs the required dependencies to run the text-based adventure games. 
-- **Metrics Evaluated via Benchmark:** Power-Seeking Score, Moral Violations Score, Disutility Score.
-- **How to run:** `./setup_machiavelli.sh`
+### 2. Extrinsic Evaluation: Probability Gain
 
-### 4. `simulate_result/` (Directory)
-**Purpose:** Contains demonstration outputs proving the pipeline works.
-- **Details:** Since running the 7B parameter model requires significant GPU VRAM, this folder stores output logs generated using a smaller fallback model (`gpt2`) on the CPU with a truncated sample size. Check the `simulation_info.md` inside for more details.
+**`evaluation/evaluate_aita_probability_gain.py`**
+- **Purpose:** Computes the mathematical shift in logits toward ethically aligned stances (e.g., "NTA") in complex social dilemmas from the AITA dataset.
+- **Features:** Efficiently extracts final sequence token logits via `torch.no_grad()` to compute `softmax(logits)` deltas instead of relying on stochastic greedy decoding.
+- **Usage:**
+  ```bash
+  python evaluation/evaluate_aita_probability_gain.py --base-model qwen2.5-7b --trained-model path/to/hypo_final --test-file ../dataset/aita_test.jsonl
+  ```
 
-## General Setup Instructions
+### 3. MACHIAVELLI Benchmark Integration
 
-To properly configure the environment before running the evaluation scripts:
-```bash
-# 1. Create a virtual environment
-python3 -m venv venv
-source venv/bin/activate
+**`setup_machiavelli.sh` & `evaluation/MACHIAVELLI_SETUP.md`**
+- **Purpose:** Fully orchestrates the interactive text-adventure environment required to benchmark the agent's Power-Seeking and Moral Violation metrics.
+- **Integration:** The `machiavelli_hf_agent_template.py` file maps our custom Qwen API to the Gym-like text interface provided by the Machiavelli engine.
 
-# 2. Install all core required packages
-pip install -r requirements.txt
+## SLURM & Cluster Integration
+All scripts are designed to work seamlessly within job arrays (e.g., `mlgpu_medium`). They parse standard `argparse` configurations allowing them to inherit model aliases, checkpoint paths, and dataset locations dynamically from the cluster dispatcher.
 
-# 3. Setup the Machiavelli environment separately
-./setup_machiavelli.sh
-```
-
-**Note:** The evaluation scripts assume the datasets are located in the main repository's root `dataset/` directory (e.g., `../dataset/aita_dataset_reduced.json`).
+---
+**Author:** Ali (Evaluation Module)
