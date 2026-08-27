@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Convert KVS survey data into evaluation JSONL.
+"""Convert the reserved KVS test split into an optional in-domain diagnostic.
 
-The KVS file is best used as a survey-style evaluation set: ask the model to
-rate value statements from 1 to 6, then compare average scores before/after
-DPO/HyPO training.
+KVS train/eval are used for preference training. This script leaves those roles
+unchanged and can turn the untouched KVS test split into 1-6 survey prompts.
+The primary cross-domain value-shift evaluation is built from AITA instead.
 """
 
 from __future__ import annotations

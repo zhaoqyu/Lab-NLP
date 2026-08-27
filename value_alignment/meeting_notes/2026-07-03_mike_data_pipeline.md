@@ -1,5 +1,10 @@
 # Mike Data Pipeline Update - 2026-07-03 16:30
 
+> **Superseded data-role note (2026-08-27):** The corrected pipeline uses KVS
+> `train/eval` for DPO/HyPO training and AITA only for cross-domain testing.
+> Commands below are retained as historical meeting notes; use the current
+> `value_alignment/README.md` workflow.
+
 ## What I Finished
 
 - Added a reproducible AITA-to-DPO converter:

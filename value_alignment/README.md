@@ -1,29 +1,28 @@
 # Value Alignment Experiment Pipeline
 
-This folder contains a modular pipeline for the NLP Lab project:
-
-- Data preparation from AITA and KVS.
-- Synthetic preference generation with a teacher LLM.
-- Standard DPO and HyPO/Hybrid-DPO training through the official HyPO trainer.
-- Intrinsic KVS value-rating evaluation.
-- Extrinsic AITA probability-gain evaluation.
-- MACHIAVELLI setup notes for optional transfer evaluation.
+This directory contains the modular pipeline for comparing standard DPO and
+HyPO/Hybrid-DPO with interchangeable instruction-tuned base models.
 
 ## Data Roles
 
-- `dataset/aita_dataset_reduced.json`
-  - Used for DPO/HyPO preference-pair training.
-  - Used again for held-out behavioral AITA evaluation.
-  - Converted to `prompt`, `chosen`, `rejected`.
+The experiment uses the two datasets in separate domains:
 
-- `dataset/kvs_data_new.json`
-  - Used mainly for intrinsic survey-style evaluation.
-  - The model rates value statements from 1 to 6.
-  - We compare target value score shifts and other-value variance before/after training.
+- **KVS is training data.** `dataset/kvs_data_new.json` provides a
+  value-supporting statement and a contrastive statement for each item. Its
+  official `train` split (378 items) becomes DPO/HyPO training pairs, and its
+  official `eval` split (108 items) is trainer validation data.
+- **AITA is test data.** All 4,335 examples in
+  `dataset/aita_dataset_reduced.json` are converted to neutral AITA prompts and
+  used only after training to measure value-score changes across 19 values.
+- The official KVS `test` split (108 items) is reserved and never written by the
+  KVS training-data builder. It can be used as an optional in-domain diagnostic.
+
+This separation avoids AITA train/test leakage and tests whether value steering
+learned from short KVS principles transfers to realistic social dilemmas.
 
 ## Setup
 
-Install dependencies in a GPU/cluster environment:
+Install dependencies in the GPU or cluster environment:
 
 ```bash
 pip install -r value_alignment/requirements.txt
@@ -34,102 +33,87 @@ Clone the official HyPO implementation:
 ```bash
 mkdir -p third_party
 git clone https://github.com/tmllab/2026_ICLR_HyPO.git third_party/2026_ICLR_HyPO
-python value_alignment/prepare_aita_dpo.py \
-  --values Security_personal Benevolence_caring Universalism_concern Self_direction_action \
-  --output-dir value_alignment/data/aita_dpo
-python value_alignment/validate_preference_pairs.py \
-  --input value_alignment/data/aita_dpo/train.jsonl
 ```
 
-Or point to an existing clone:
+Alternatively, point the wrapper to an existing clone:
 
 ```bash
 export HYPO_REPO=/path/to/2026_ICLR_HyPO
 ```
 
-## Model Switching
+## 1. Prepare KVS Training Pairs
 
-All model scripts accept either a full Hugging Face model path or one of these aliases:
-
-```text
-qwen2.5-7b       -> Qwen/Qwen2.5-7B-Instruct
-qwen2.5-1.5b     -> Qwen/Qwen2.5-1.5B-Instruct
-mistral-7b       -> mistralai/Mistral-7B-Instruct-v0.3
-mistral-7b-v02   -> mistralai/Mistral-7B-Instruct-v0.2
-llama3.1-8b      -> meta-llama/Llama-3.1-8B-Instruct
-```
-
-Aliases live in:
-
-```text
-value_alignment/configs/model_aliases.json
-```
-
-Example:
+Build preference pairs from the native KVS `train` and `eval` splits:
 
 ```bash
-python value_alignment/train_with_official_hypo.py --model qwen2.5-7b
-python value_alignment/train_with_official_hypo.py --model mistral-7b
-python value_alignment/train_with_official_hypo.py --model llama3.1-8b
+python value_alignment/prepare_kvs_dpo.py \
+  --values all \
+  --output-dir value_alignment/data/kvs_dpo
 ```
 
-## Dataset Summary
-
-```bash
-python value_alignment/summarize_datasets.py \
-  --output value_alignment/results/dataset_summary.json
-```
-
-Current local summary:
-
-- AITA: 4,335 examples across 19 values.
-- KVS: 378 train, 108 eval, 108 test examples.
-
-## AITA Preference Data
-
-Prepare a full DPO/HyPO split:
-
-```bash
-python value_alignment/prepare_aita_dpo.py \
-  --values Security_personal Benevolence_caring Universalism_concern Self_direction_action \
-  --output-dir value_alignment/data/aita_dpo
-```
-
-This creates:
+This writes:
 
 ```text
-value_alignment/data/aita_dpo/train.jsonl
-value_alignment/data/aita_dpo/eval.jsonl
-value_alignment/data/aita_dpo/test.jsonl
+value_alignment/data/kvs_dpo/train.jsonl  # 378 rows
+value_alignment/data/kvs_dpo/eval.jsonl   # 108 rows
 ```
 
-In the current run this produced:
+Each row has this core structure:
 
-```text
-train: 1600
-eval:   200
-test:   200
+```json
+{
+  "prompt": "value goal and response instruction",
+  "chosen": "KVS value-supporting statement",
+  "rejected": "KVS contrastive statement",
+  "value": "Self_direction_thought"
+}
 ```
 
-Create a small inspectable batch:
+Train on selected values instead of all 20 values by listing them explicitly:
 
 ```bash
-python value_alignment/prepare_aita_dpo.py \
+python value_alignment/prepare_kvs_dpo.py \
   --values Security_personal Benevolence_caring Universalism_concern \
-  --max-per-value 10 \
-  --single-file value_alignment/examples/first_batch_aita_preferences.jsonl
+  --output-dir value_alignment/data/kvs_dpo_targeted
 ```
 
-Validate preference pairs:
+Validate either dataset before training:
 
 ```bash
 python value_alignment/validate_preference_pairs.py \
-  --input value_alignment/data/aita_dpo/train.jsonl
+  --input value_alignment/data/kvs_dpo/train.jsonl \
+  --require-rationale
 ```
 
-## Synthetic Teacher Generation
+## 2. Prepare the AITA Test Set
 
-Dry-run first to inspect prompts without spending API/cluster budget:
+Build the cross-domain evaluation file:
+
+```bash
+python value_alignment/prepare_aita_eval.py \
+  --values all \
+  --output value_alignment/data/aita_eval/test.jsonl
+```
+
+The test prompt asks only for `NTA`, `YTA`, or `Neutral`. It deliberately does
+not reveal the target value, the high-standard label, or the low-standard label.
+Those labels remain metadata used by the scoring script.
+
+For a quick balanced smoke test, cap the number of examples per value:
+
+```bash
+python value_alignment/prepare_aita_eval.py \
+  --max-per-value 5 \
+  --output value_alignment/data/aita_eval/smoke_test.jsonl
+```
+
+## 3. Optional Teacher-Model Enrichment
+
+The synthetic-data script now uses KVS seeds. It asks a teacher model to turn a
+short value principle into a new concrete decision scenario with a chosen and a
+contrastive response.
+
+Inspect jobs without making API calls:
 
 ```bash
 python value_alignment/generate_synthetic_preferences.py \
@@ -140,22 +124,23 @@ python value_alignment/generate_synthetic_preferences.py \
   --output value_alignment/examples/teacher_prompt_jobs_dryrun.jsonl
 ```
 
-Generate with an OpenAI-compatible endpoint:
+Generate data with an OpenAI-compatible endpoint:
 
 ```bash
 export OPENAI_API_KEY=...
-# Optional for local/vLLM/OpenAI-compatible endpoints:
+# Optional for a local or vLLM endpoint:
 export OPENAI_BASE_URL=http://localhost:8000/v1
 
 python value_alignment/generate_synthetic_preferences.py \
   --model gpt-4.1-mini \
-  --values Security_personal Benevolence_caring Universalism_concern Self_direction_action \
-  --examples-per-value 50 \
+  --values all \
+  --examples-per-value 20 \
   --personas-per-example 2 \
   --output value_alignment/data/synthetic_preferences.jsonl
 ```
 
-Validate generated data:
+The teacher is asked for concise public rationales, not hidden chain-of-thought.
+Validate generated rows before combining them with the native KVS pairs:
 
 ```bash
 python value_alignment/validate_preference_pairs.py \
@@ -163,43 +148,54 @@ python value_alignment/validate_preference_pairs.py \
   --require-rationale
 ```
 
-We store concise public rationales, not long hidden chain-of-thought traces.
+## 4. Train DPO or HyPO
 
-## Training: Standard DPO
+The wrapper imports `DPOTrainer` and `DPOConfig` from the official HyPO
+repository. It does not reimplement the optimization algorithm.
+
+Standard DPO:
 
 ```bash
 python value_alignment/train_with_official_hypo.py \
   --method dpo \
   --model qwen2.5-7b \
-  --train-file value_alignment/data/aita_dpo/train.jsonl \
-  --eval-file value_alignment/data/aita_dpo/eval.jsonl \
+  --train-file value_alignment/data/kvs_dpo/train.jsonl \
+  --eval-file value_alignment/data/kvs_dpo/eval.jsonl \
   --output-dir value_alignment/checkpoints/qwen_dpo
 ```
 
-## Training: HyPO / Hybrid-DPO
+HyPO / Hybrid-DPO:
 
 ```bash
 python value_alignment/train_with_official_hypo.py \
   --method hypo \
   --model qwen2.5-7b \
-  --train-file value_alignment/data/aita_dpo/train.jsonl \
-  --eval-file value_alignment/data/aita_dpo/eval.jsonl \
+  --train-file value_alignment/data/kvs_dpo/train.jsonl \
+  --eval-file value_alignment/data/kvs_dpo/eval.jsonl \
   --output-dir value_alignment/checkpoints/qwen_hypo \
   --gamma 0.0
 ```
 
-Config-file example:
+The smoke-test config also points to KVS:
 
 ```bash
 python value_alignment/train_with_official_hypo.py \
   --config value_alignment/configs/qwen_hypo_smoketest.json
 ```
 
-The wrapper calls the official HyPO `DPOTrainer`; our code does not reimplement the core algorithm.
+Supported aliases are defined in `value_alignment/configs/model_aliases.json`:
 
-## SLURM Training on Marvin
+```text
+qwen2.5-7b       -> Qwen/Qwen2.5-7B-Instruct
+qwen2.5-1.5b     -> Qwen/Qwen2.5-1.5B-Instruct
+mistral-7b       -> mistralai/Mistral-7B-Instruct-v0.3
+mistral-7b-v02   -> mistralai/Mistral-7B-Instruct-v0.2
+llama3.1-8b      -> meta-llama/Llama-3.1-8B-Instruct
+```
 
-The job-array script runs all six model/method combinations:
+## 5. SLURM Training
+
+The job array runs six model/method combinations:
 
 ```text
 array 0: qwen2.5-7b  + DPO
@@ -210,82 +206,63 @@ array 4: llama3.1-8b + DPO
 array 5: llama3.1-8b + HyPO
 ```
 
-It requests one GPU, 64 GB RAM, four CPUs, and 24 hours from
-`mlgpu_medium`. At most two array tasks run concurrently.
-
-Prepare the environment once on the login node:
-
-```bash
-cd /path/to/Lab-NLP
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r value_alignment/requirements.txt
-mkdir -p third_party
-git clone https://github.com/tmllab/2026_ICLR_HyPO.git third_party/2026_ICLR_HyPO
-```
-
-Submit only Qwen DPO and HyPO first:
+Submit Qwen first as a smoke test:
 
 ```bash
 sbatch --array=0-1 value_alignment/slurm/train_dpo_hypo_array.sh
 ```
 
-Submit the complete comparison after the Qwen jobs pass:
+Then submit the full comparison:
 
 ```bash
 sbatch value_alignment/slurm/train_dpo_hypo_array.sh
 ```
 
-Useful overrides can be supplied with `--export`. This example creates a
-shorter Qwen HyPO smoke test in a separate output directory:
-
-```bash
-sbatch \
-  --array=1 \
-  --export=ALL,EPOCHS=0.05,MAX_LENGTH=1024,MAX_PROMPT_LENGTH=768,RUN_TAG=smoke \
-  value_alignment/slurm/train_dpo_hypo_array.sh
-```
-
-Common overrides are:
+The defaults are now:
 
 ```text
-VENV_PATH=/path/to/venv
-HYPO_REPO=/path/to/2026_ICLR_HyPO
-HF_HOME=/path/to/huggingface/cache
-OUTPUT_ROOT=/path/to/checkpoints
-TRAIN_FILE=/path/to/train.jsonl
-EVAL_FILE=/path/to/eval.jsonl
-EPOCHS=1.0
-BATCH_SIZE=1
-GRAD_ACCUM=8
-LEARNING_RATE=1e-5
-RUN_TAG=experiment-name
+TRAIN_FILE=value_alignment/data/kvs_dpo/train.jsonl
+EVAL_FILE=value_alignment/data/kvs_dpo/eval.jsonl
 ```
 
-Llama 3.1 is gated on Hugging Face, so accept its model license and authenticate
-with `hf auth login` before submitting array tasks 4 and 5. SLURM `.out`, `.err`,
-and per-run logs are written to `value_alignment/slurm_logs/`; model outputs go
-to `value_alignment/checkpoints/slurm/` by default.
+They can still be overridden with `sbatch --export`. Llama 3.1 is gated on
+Hugging Face, so accept its license and authenticate before array tasks 4-5.
 
-## DPO vs HyPO Difference
+## 6. Evaluate AITA Value-Score Change
 
-Standard DPO:
+Compare the base model and a trained checkpoint:
 
-```python
-logits = delta_policy - delta_ref
+```bash
+python value_alignment/evaluation/evaluate_aita_probability_gain.py \
+  --base-model qwen2.5-7b \
+  --trained-model value_alignment/checkpoints/qwen_hypo/hypo/final \
+  --test-file value_alignment/data/aita_eval/test.jsonl \
+  --output-json value_alignment/results/aita_hypo_value_shift.json \
+  --output-csv value_alignment/results/aita_hypo_value_shift.csv
 ```
 
-HyPO:
+For each AITA example, the value score is:
 
-```python
-logits = delta_policy - max(0, delta_ref)
+```text
+P(high-standard label)
+-----------------------------------------------------
+P(high-standard label) + P(low-standard label)
 ```
 
-HyPO keeps reference-model regularization when useful, but avoids weakening the preference signal when the reference model prefers the rejected answer.
+The score lies in `[0, 1]`. A positive trained-minus-base change means the
+trained model moved toward the value-consistent stance. Results include:
 
-## Intrinsic Evaluation: KVS
+- Micro and macro mean value-score change.
+- Base and trained three-label accuracy.
+- Base and trained pairwise high-vs-low accuracy.
+- Per-value score changes across the 19 AITA values.
+- Per-example JSON and CSV records for statistical analysis.
 
-Prepare survey prompts:
+Use `--max-examples` for a GPU smoke test before evaluating all 4,335 examples.
+
+## Optional Reserved-KVS Diagnostic
+
+The untouched KVS `test` split can still be evaluated in-domain:
 
 ```bash
 python value_alignment/prepare_kvs_eval.py \
@@ -293,83 +270,18 @@ python value_alignment/prepare_kvs_eval.py \
   --output value_alignment/data/kvs_test_eval.jsonl
 ```
 
-Evaluate the base model:
+Then use `evaluate_kvs_survey.py` and
+`evaluation/compare_kvs_results.py`. This result is supplementary; AITA is the
+primary transfer test.
+
+## Local Checks
+
+Run the data-role regression tests and syntax checks:
 
 ```bash
-python value_alignment/evaluate_kvs_survey.py \
-  --model qwen2.5-7b \
-  --eval-file value_alignment/data/kvs_test_eval.jsonl \
-  --output value_alignment/results/kvs_base_scores.json \
-  --output-csv value_alignment/results/kvs_base_scores.csv
+python -m unittest discover -s value_alignment/tests -v
+python -m compileall -q value_alignment
 ```
 
-Evaluate a trained model:
-
-```bash
-python value_alignment/evaluate_kvs_survey.py \
-  --model value_alignment/checkpoints/qwen_hypo/hypo/final \
-  --eval-file value_alignment/data/kvs_test_eval.jsonl \
-  --output value_alignment/results/kvs_hypo_scores.json \
-  --output-csv value_alignment/results/kvs_hypo_scores.csv
-```
-
-Compare intrinsic scores:
-
-```bash
-python value_alignment/evaluation/compare_kvs_results.py \
-  --base value_alignment/results/kvs_base_scores.json \
-  --trained value_alignment/results/kvs_hypo_scores.json \
-  --target-values Security_personal Benevolence_caring Universalism_concern Self_direction_action \
-  --output-json value_alignment/results/kvs_hypo_comparison.json \
-  --output-csv value_alignment/results/kvs_hypo_comparison.csv
-```
-
-Metrics:
-
-- Target value mean score shift.
-- Per-value mean and standard deviation.
-- Other values' variance, measuring unintended drift.
-
-## Extrinsic Evaluation: AITA Probability Gain
-
-Run after training:
-
-```bash
-python value_alignment/evaluation/evaluate_aita_probability_gain.py \
-  --base-model qwen2.5-7b \
-  --trained-model value_alignment/checkpoints/qwen_hypo/hypo/final \
-  --test-file value_alignment/data/aita_dpo/test.jsonl \
-  --output-json value_alignment/results/aita_hypo_probability_gain.json \
-  --output-csv value_alignment/results/aita_hypo_probability_gain.csv
-```
-
-Metrics:
-
-- Base/trained accuracy against `high_standard_stance`.
-- Per-value accuracy.
-- Probability gain for the value-consistent label.
-
-## MACHIAVELLI
-
-See:
-
-```text
-value_alignment/evaluation/MACHIAVELLI_SETUP.md
-value_alignment/evaluation/machiavelli_hf_agent_template.py
-```
-
-This is optional/heavier because it requires a separate benchmark repo and game data download.
-
-## Local Validation Already Run
-
-These checks were run locally:
-
-```text
-AITA split generation: 2000 examples -> 1600/200/200
-AITA train validation: 1600 rows, 0 errors
-KVS test conversion: 108 rows
-Synthetic teacher dry-run: passed
-Python compile check: passed
-```
-
-Training and model evaluations require the GPU/cluster environment and model downloads.
+Full DPO/HyPO training and model scoring require the cluster GPU environment and
+model downloads.
