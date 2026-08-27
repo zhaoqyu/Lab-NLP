@@ -1,5 +1,9 @@
 # 2026-07-10 项目进展汇报稿
 
+> **数据角色更正（2026-08-27）：** 当前 pipeline 使用 KVS 的 `train/eval`
+> 训练 DPO/HyPO，只使用 AITA 做跨数据集价值观变化测试。以下内容保留为历史会议记录，
+> 实际命令与说明请以 `value_alignment/README.md` 为准。
+
 ## 一句话总结
 
 我们现在有了一个比较完整的 value alignment 实验 pipeline：AITA 用来做 DPO/HyPO preference training 和行为评估，KVS 用来做 survey-style intrinsic evaluation，训练部分调用官方 HyPO implementation，并且模型可以在 Qwen、Mistral、Llama 之间切换。

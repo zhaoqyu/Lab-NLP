@@ -76,8 +76,8 @@ else
   exit 1
 fi
 
-TRAIN_FILE="${TRAIN_FILE:-value_alignment/data/aita_dpo/train.jsonl}"
-EVAL_FILE="${EVAL_FILE:-value_alignment/data/aita_dpo/eval.jsonl}"
+TRAIN_FILE="${TRAIN_FILE:-value_alignment/data/kvs_dpo/train.jsonl}"
+EVAL_FILE="${EVAL_FILE:-value_alignment/data/kvs_dpo/eval.jsonl}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-value_alignment/checkpoints/slurm}"
 HYPO_REPO="${HYPO_REPO:-$REPO_ROOT/third_party/2026_ICLR_HyPO}"
 
@@ -100,9 +100,9 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 
 for DATA_FILE in "$TRAIN_FILE" "$EVAL_FILE"; do
   if [[ ! -f "$DATA_FILE" ]]; then
-    echo "AITA training split not found: $DATA_FILE" >&2
+    echo "KVS training split not found: $DATA_FILE" >&2
     echo "Generate it before submitting with:" >&2
-    echo "  python value_alignment/prepare_aita_dpo.py --output-dir value_alignment/data/aita_dpo" >&2
+    echo "  python value_alignment/prepare_kvs_dpo.py --output-dir value_alignment/data/kvs_dpo" >&2
     exit 1
   fi
 done

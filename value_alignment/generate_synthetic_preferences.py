@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""Generate synthetic AITA preference pairs with a teacher LLM.
+"""Enrich KVS seeds into synthetic preference pairs with a teacher LLM.
 
-The script supports two modes:
-
-1. `--dry-run`: write teacher prompts as JSONL jobs for inspection or later batch
-   execution.
-2. normal mode: call an OpenAI-compatible chat-completions endpoint using
-   `OPENAI_API_KEY` and optional `OPENAI_BASE_URL`.
-
-The requested "CoT" is stored as a short public rationale. We avoid hidden
-chain-of-thought traces and ask the teacher for concise, checkable reasoning.
+Dry-run mode writes inspectable teacher jobs without making API calls. Normal
+mode calls an OpenAI-compatible chat-completions endpoint. The teacher produces
+concise public rationales, not hidden chain-of-thought traces.
 """
 
 from __future__ import annotations
@@ -21,15 +15,10 @@ import random
 import time
 import urllib.error
 import urllib.request
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-
-DEFAULT_VALUES = [
-    "Security_personal",
-    "Benevolence_caring",
-    "Universalism_concern",
-]
 
 PERSONAS = [
     {
@@ -77,10 +66,11 @@ PERSONAS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=Path, default=Path("dataset/aita_dataset_reduced.json"))
+    parser.add_argument("--input", type=Path, default=Path("dataset/kvs_data_new.json"))
+    parser.add_argument("--split", choices=["train", "eval"], default="train")
     parser.add_argument("--output", type=Path, default=Path("value_alignment/data/synthetic_preferences.jsonl"))
-    parser.add_argument("--values", nargs="+", default=DEFAULT_VALUES)
-    parser.add_argument("--examples-per-value", type=int, default=20)
+    parser.add_argument("--values", nargs="+", default=["all"])
+    parser.add_argument("--examples-per-value", type=int, default=5)
     parser.add_argument("--personas-per-example", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--model", default=os.environ.get("TEACHER_MODEL", "gpt-4.1-mini"))
@@ -89,17 +79,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_seed_examples(path: Path, values: list[str], examples_per_value: int, rng: random.Random) -> list[dict]:
+def load_seed_examples(
+    path: Path,
+    split: str,
+    values: list[str],
+    examples_per_value: int,
+    rng: random.Random,
+) -> list[dict]:
     raw = json.loads(path.read_text(encoding="utf-8"))
-    selected_values = list(raw) if values == ["all"] else values
-    seeds: list[dict] = []
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for item in raw[split]:
+        grouped[item["level2"][0]].append(item)
+
+    selected_values = sorted(grouped) if values == ["all"] else values
+    unknown = sorted(set(selected_values) - set(grouped))
+    if unknown:
+        raise KeyError(f"KVS values not found: {', '.join(unknown)}")
+
+    seeds = []
     for value in selected_values:
-        if value not in raw:
-            raise KeyError(f"Value {value!r} not found in {path}")
-        items = list(raw[value])
+        items = list(grouped[value])
         rng.shuffle(items)
-        for item in items[:examples_per_value]:
-            seeds.append(item)
+        limit = len(items) if examples_per_value == 0 else examples_per_value
+        seeds.extend(items[:limit])
     rng.shuffle(seeds)
     return seeds
 
@@ -107,51 +109,47 @@ def load_seed_examples(path: Path, values: list[str], examples_per_value: int, r
 def choose_personas(value: str, count: int, rng: random.Random) -> list[dict]:
     directly_relevant = [persona for persona in PERSONAS if value in persona["strong_values"]]
     remaining = [persona for persona in PERSONAS if persona not in directly_relevant]
+    rng.shuffle(directly_relevant)
+    rng.shuffle(remaining)
     ordered = directly_relevant + remaining
-    if len(ordered) >= count:
+    if count <= len(ordered):
         return ordered[:count]
-    return [rng.choice(PERSONAS) for _ in range(count)]
+    return ordered + [rng.choice(PERSONAS) for _ in range(count - len(ordered))]
 
 
 def build_teacher_prompt(seed: dict, persona: dict) -> str:
-    value = seed["value"]
-    high_label = seed["high_standard_stance"]
-    low_label = seed["low_standard_stance"]
-    high_rationale = seed["justification"]["high_standard_stance"]
-    low_rationale = seed["justification"]["low_standard_stance"]
-
-    return f"""You are creating training data for a value-alignment DPO/HyPO experiment.
+    value = seed["level2"][0]
+    goal = seed["level1"][0]
+    return f"""You are creating preference data for a DPO/HyPO value-alignment experiment.
 
 Target value: {value}
+Human-readable goal: {goal}
 Persona: {persona["id"]} - {persona["description"]}
 
-AITA post:
-{seed["post"]}
+KVS positive seed:
+{seed["sentence"]}
 
-Seed labels:
-- High-standard value stance: {high_label}
-- Low-standard value stance: {low_label}
+KVS contrastive seed:
+{seed["negative_sentence"]}
 
-Seed rationales:
-- High-standard rationale: {high_rationale}
-- Low-standard rationale: {low_rationale}
-
-Create one preference pair for training.
+Create one NEW, realistic everyday social or moral scenario and a response pair.
 
 Rules:
-- The chosen answer must use the high-standard value stance label.
-- The rejected answer must use the low-standard value stance label.
-- Each answer must start with exactly one label: NTA, YTA, or Neutral.
-- Use concise public reasoning, not long hidden chain-of-thought.
-- Do not invent new facts beyond the post.
-- Keep each answer under 120 words.
+- The prompt must describe a concrete decision and must not name the target value.
+- The chosen response must clearly enact the target value and persona in that decision.
+- The rejected response must be plausible and fluent but follow the contrastive orientation.
+- Keep chosen and rejected similar in length and general writing quality.
+- Do not copy either KVS seed sentence verbatim.
+- Do not invent hidden facts or use AITA labels unless the scenario naturally asks for them.
+- Keep the prompt under 180 words and each response under 120 words.
+- Give only a concise, checkable public rationale; do not provide hidden chain-of-thought.
 
 Return only valid JSON with this schema:
 {{
-  "prompt": "AITA prompt for the student model",
-  "chosen": "label plus concise value-grounded rationale",
-  "rejected": "label plus concise lower-value rationale",
-  "public_rationale": "one-sentence explanation of why the chosen answer better represents the target value"
+  "prompt": "neutral decision scenario and response instruction",
+  "chosen": "target-value-consistent response",
+  "rejected": "contrastive response",
+  "public_rationale": "one sentence explaining the observable preference"
 }}"""
 
 
@@ -160,23 +158,19 @@ def call_openai_compatible(model: str, prompt: str) -> dict:
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required unless --dry-run is used.")
     base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-    url = f"{base_url}/chat/completions"
     payload = {
         "model": model,
         "temperature": 0.4,
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": "You generate clean JSON training data for ML experiments."},
+            {"role": "system", "content": "You generate clean JSON preference data for ML experiments."},
             {"role": "user", "content": prompt},
         ],
     }
     request = urllib.request.Request(
-        url,
+        f"{base_url}/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
     try:
@@ -185,62 +179,83 @@ def call_openai_compatible(model: str, prompt: str) -> dict:
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Teacher API request failed: {exc.code} {detail}") from exc
-
-    content = data["choices"][0]["message"]["content"]
-    return json.loads(content)
+    return json.loads(data["choices"][0]["message"]["content"])
 
 
-def make_seed_prompt(seed: dict, persona: dict) -> str:
-    return (
-        "You are evaluating an AITA post.\n"
-        f"Target value: {seed['value']}.\n"
-        f"Persona context: {persona['description']}\n"
-        "Give exactly one label from NTA, YTA, or Neutral, followed by a short explanation.\n\n"
-        f"Post:\n{seed['post']}"
-    )
-
-
-def fallback_pair(seed: dict, persona: dict) -> dict[str, Any]:
+def fallback_pair(seed: dict) -> dict[str, Any]:
+    goal = seed["level1"][0].strip()
     return {
-        "prompt": make_seed_prompt(seed, persona),
-        "chosen": f"{seed['high_standard_stance']}. {seed['justification']['high_standard_stance']}",
-        "rejected": f"{seed['low_standard_stance']}. {seed['justification']['low_standard_stance']}",
-        "public_rationale": seed["justification"]["value_assignment"],
+        "prompt": (
+            "State one concise principle that should guide a person's decisions.\n"
+            f"Goal: {goal}\n"
+            "The principle should strongly support this goal. Return only the principle."
+        ),
+        "chosen": seed["sentence"].strip(),
+        "rejected": seed["negative_sentence"].strip(),
+        "public_rationale": (
+            f"The chosen statement supports '{goal}', while the rejected statement is its KVS contrast."
+        ),
     }
+
+
+def validate_generated_pair(pair: dict) -> None:
+    for field in ("prompt", "chosen", "rejected", "public_rationale"):
+        if not isinstance(pair.get(field), str) or not pair[field].strip():
+            raise ValueError(f"Teacher output is missing a non-empty {field!r} string.")
+    if pair["chosen"].strip() == pair["rejected"].strip():
+        raise ValueError("Teacher output has identical chosen and rejected responses.")
 
 
 def main() -> None:
     args = parse_args()
+    if args.examples_per_value < 0 or args.personas_per_example < 1:
+        raise SystemExit("--examples-per-value must be non-negative and --personas-per-example must be positive.")
+
     rng = random.Random(args.seed)
-    seeds = load_seed_examples(args.input, args.values, args.examples_per_value, rng)
+    seeds = load_seed_examples(args.input, args.split, args.values, args.examples_per_value, rng)
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    row_count = 0
 
     with args.output.open("w", encoding="utf-8") as handle:
         for seed in seeds:
-            for persona in choose_personas(seed["value"], args.personas_per_example, rng):
+            value = seed["level2"][0]
+            for persona in choose_personas(value, args.personas_per_example, rng):
                 teacher_prompt = build_teacher_prompt(seed, persona)
                 metadata = {
-                    "source": "aita_seed",
+                    "source": "kvs_seed",
+                    "source_split": args.split,
                     "teacher_model": args.model,
-                    "target_value": seed["value"],
+                    "target_value": value,
+                    "level1": seed["level1"][0],
                     "persona_id": persona["id"],
-                    "high_standard_stance": seed["high_standard_stance"],
-                    "low_standard_stance": seed["low_standard_stance"],
                 }
                 if args.dry_run:
                     row = {
                         "metadata": metadata,
                         "teacher_prompt": teacher_prompt,
-                        "fallback_pair": fallback_pair(seed, persona),
+                        "fallback_pair": fallback_pair(seed),
                     }
                 else:
                     generated = call_openai_compatible(args.model, teacher_prompt)
+                    validate_generated_pair(generated)
                     row = {**generated, "metadata": metadata}
                     if args.sleep:
                         time.sleep(args.sleep)
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                row_count += 1
 
-    print(json.dumps({"seed_examples": len(seeds), "rows": len(seeds) * args.personas_per_example, "output": str(args.output), "dry_run": args.dry_run}, indent=2))
+    print(
+        json.dumps(
+            {
+                "source": f"kvs:{args.split}",
+                "seed_examples": len(seeds),
+                "rows": row_count,
+                "output": str(args.output),
+                "dry_run": args.dry_run,
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 
 This script imports `DPOTrainer` and `DPOConfig` from the official repository
 cloned at `third_party/2026_ICLR_HyPO`. It avoids the Alignment Handbook launcher so
-we can train on the local AITA JSONL files used in this lab project.
+we can train on the local KVS preference JSONL files used in this lab project.
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct")
     parser.add_argument("--ref-model", default=None)
     parser.add_argument("--model-aliases", type=Path, default=Path("value_alignment/configs/model_aliases.json"))
-    parser.add_argument("--train-file", type=Path, default=Path("value_alignment/data/aita_dpo/train.jsonl"))
-    parser.add_argument("--eval-file", type=Path, default=Path("value_alignment/data/aita_dpo/eval.jsonl"))
+    parser.add_argument("--train-file", type=Path, default=Path("value_alignment/data/kvs_dpo/train.jsonl"))
+    parser.add_argument("--eval-file", type=Path, default=Path("value_alignment/data/kvs_dpo/eval.jsonl"))
     parser.add_argument("--output-dir", type=Path, default=Path("value_alignment/checkpoints"))
     parser.add_argument("--beta", type=float, default=0.1)
     parser.add_argument("--gamma", type=float, default=0.0)
