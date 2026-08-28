@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Convert KVS train/eval splits into DPO/HyPO preference pairs.
+"""Build paper-aligned, target-specific KVS preference datasets.
 
-Each KVS record already contains a value-supporting statement and a supplied
-contrast. The supporting statement becomes the chosen completion and the
-contrast becomes the rejected completion. The official KVS test split is not
-written by this script, so it remains untouched by training.
+For a down-regulated target value, target rows reverse the supplied KVS pair:
+the opposing statement is chosen and the value-affirming statement is rejected.
+All non-target rows retain the positive ordering to limit collateral drift. One
+dataset is written per target value for standard DPO and the HyPO extension.
 """
 
 from __future__ import annotations
@@ -15,108 +15,105 @@ import random
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from value_alignment.survey_data import kvs_item_id
+from value_alignment.value_taxonomy import (
+    basic_value_for_fine,
+    canonical_basic_value,
+    selected_basic_values,
+    value_slug,
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--input", type=Path, default=Path("dataset/kvs_data_new.json"))
     parser.add_argument(
-        "--input",
+        "--output-root",
         type=Path,
-        default=Path("dataset/kvs_data_new.json"),
-        help="Path to kvs_data_new.json.",
+        default=Path("value_alignment/data/paper_preferences"),
+        help="Target-specific datasets are written below this directory.",
     )
     parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("value_alignment/data/kvs_dpo"),
-        help="Directory where train.jsonl and eval.jsonl are written.",
-    )
-    parser.add_argument(
-        "--values",
+        "--target-values",
         nargs="+",
         default=["all"],
-        help="KVS level-2 values to include. The default, 'all', includes every value.",
+        help="One or more of the ten basic Schwartz values, or 'all'.",
     )
     parser.add_argument(
         "--max-per-value",
         type=int,
         default=0,
-        help="Optional cap per value and split. 0 means no cap.",
+        help="Optional cap per basic value and split for smoke tests. 0 keeps all rows.",
     )
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
 
-def make_prompt(item: dict) -> str:
-    goal = item["level1"][0].strip()
+def make_prompt() -> str:
     return (
-        "State one concise principle that should guide a person's decisions.\n"
-        f"Goal: {goal}\n"
-        "The principle should strongly support this goal. Return only the principle."
+        "Describe one personal principle that guides how you act. "
+        "Respond with one concise first-person statement and no explanation."
     )
 
 
-def _selected_values(data: dict, requested: list[str]) -> set[str]:
-    available = {
-        item["level2"][0]
-        for split in ("train", "eval", "test")
-        for item in data[split]
-    }
-    if requested == ["all"]:
-        return available
-    unknown = sorted(set(requested) - available)
-    if unknown:
-        raise KeyError(f"KVS values not found: {', '.join(unknown)}")
-    return set(requested)
+def _select_items(
+    items: list[dict],
+    max_per_value: int,
+    rng: random.Random,
+) -> list[tuple[int, dict]]:
+    grouped: dict[str, list[tuple[int, dict]]] = defaultdict(list)
+    for index, item in enumerate(items):
+        basic_value = basic_value_for_fine(item["level2"][0])
+        grouped[basic_value].append((index, item))
+
+    selected = []
+    for basic_value in sorted(grouped):
+        value_items = grouped[basic_value]
+        if max_per_value > 0 and len(value_items) > max_per_value:
+            value_items = rng.sample(value_items, max_per_value)
+        selected.extend(value_items)
+    return selected
 
 
 def convert_split(
     items: list[dict],
     split: str,
-    selected_values: set[str],
+    target_value: str,
     max_per_value: int,
     rng: random.Random,
 ) -> list[dict]:
-    grouped: dict[str, list[tuple[int, dict]]] = defaultdict(list)
-    for index, item in enumerate(items):
-        value = item["level2"][0]
-        if value in selected_values:
-            grouped[value].append((index, item))
-
-    selected: list[tuple[int, dict]] = []
-    for value in sorted(grouped):
-        value_items = grouped[value]
-        if max_per_value > 0 and len(value_items) > max_per_value:
-            value_items = rng.sample(value_items, max_per_value)
-        selected.extend(value_items)
-
+    target_value = canonical_basic_value(target_value)
     rows = []
-    for index, item in selected:
-        chosen = item["sentence"].strip()
-        rejected = item["negative_sentence"].strip()
-        if not chosen or not rejected:
+    for index, item in _select_items(items, max_per_value, rng):
+        positive = item["sentence"].strip()
+        opposing = item["negative_sentence"].strip()
+        if not positive or not opposing:
             raise ValueError(f"KVS {split} row {index} has an empty preference completion.")
-        if chosen == rejected:
+        if positive == opposing:
             raise ValueError(f"KVS {split} row {index} has identical completions.")
 
-        value = item["level2"][0]
-        goal = item["level1"][0].strip()
+        fine_value = item["level2"][0]
+        basic_value = basic_value_for_fine(fine_value)
+        is_target = basic_value == target_value
+        chosen, rejected = (opposing, positive) if is_target else (positive, opposing)
         rows.append(
             {
-                "id": f"kvs-{split}-{index:04d}",
-                "prompt": make_prompt(item),
+                "id": kvs_item_id(split, index),
+                "prompt": make_prompt(),
                 "chosen": chosen,
                 "rejected": rejected,
-                "value": value,
-                "target_value": value,
+                "fine_value": fine_value,
+                "value": basic_value,
+                "target_value": target_value,
+                "is_target": is_target,
+                "intervention": "down",
                 "category": item["category"],
-                "level1": goal,
-                "level3": item["level3"][0],
-                "level4": item["level4"],
+                "level1": item["level1"][0],
                 "source": "kvs",
                 "source_split": split,
                 "public_rationale": (
-                    f"The chosen statement endorses the KVS goal '{goal}', while the "
-                    "rejected statement is the dataset's contrastive alternative."
+                    "Target rows prefer the supplied opposing statement to down-regulate the value; "
+                    "non-target rows retain the value-affirming preference as an anchor."
                 ),
             }
         )
@@ -126,6 +123,7 @@ def convert_split(
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -137,41 +135,33 @@ def main() -> None:
         raise SystemExit("--max-per-value must be non-negative.")
 
     data = json.loads(args.input.read_text(encoding="utf-8"))
-    for required_split in ("train", "eval", "test"):
-        if required_split not in data:
-            raise KeyError(f"KVS input is missing the {required_split!r} split.")
+    for split in ("train", "eval", "test"):
+        if split not in data:
+            raise KeyError(f"KVS input is missing the {split!r} split.")
 
-    selected_values = _selected_values(data, args.values)
-    outputs = {}
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    for split in ("train", "eval"):
-        rows = convert_split(
-            data[split],
-            split,
-            selected_values,
-            args.max_per_value,
-            random.Random(f"{args.seed}:{split}"),
-        )
-        write_jsonl(args.output_dir / f"{split}.jsonl", rows)
-        outputs[split] = rows
+    targets = selected_basic_values(args.target_values)
+    summary = {"kvs_test_reserved": len(data["test"]), "targets": {}}
+    for target_value in targets:
+        target_dir = args.output_root / value_slug(target_value) / "down"
+        target_summary = {}
+        for split in ("train", "eval"):
+            rows = convert_split(
+                data[split],
+                split,
+                target_value,
+                args.max_per_value,
+                random.Random(f"{args.seed}:{target_value}:{split}"),
+            )
+            write_jsonl(target_dir / f"{split}.jsonl", rows)
+            target_summary[split] = {
+                "rows": len(rows),
+                "target_rows": sum(row["is_target"] for row in rows),
+                "by_value": dict(sorted(Counter(row["value"] for row in rows).items())),
+            }
+        summary["targets"][target_value] = target_summary
 
-    counts = {
-        split: dict(sorted(Counter(row["value"] for row in rows).items()))
-        for split, rows in outputs.items()
-    }
-    print(
-        json.dumps(
-            {
-                "train": len(outputs["train"]),
-                "eval": len(outputs["eval"]),
-                "kvs_test_reserved": len(data["test"]),
-                "values": sorted(selected_values),
-                "counts": counts,
-                "output_dir": str(args.output_dir),
-            },
-            indent=2,
-        )
-    )
+    summary["output_root"] = str(args.output_root)
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
