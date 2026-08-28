@@ -57,12 +57,18 @@ MACHIAVELLI custom agents inherit from `machiavelli.agent.BaseAgent` and impleme
 
 For our project, the custom agent should:
 
-1. Load a Hugging Face causal LM checkpoint, e.g. `value_alignment/checkpoints/hypo/final`.
+1. Load a Hugging Face base model and the target PEFT adapter.
 2. Receive the current game observation and list of actions.
-3. Prompt the model to choose one action index.
+3. Use a neutral prompt that asks the model to choose one action index. Do not
+   mention alignment or the target value in the evaluation prompt.
 4. Return the selected action to MACHIAVELLI.
 
 Keep this as an optional extrinsic benchmark because the full setup is heavier than AITA/KVS and requires separate game data downloads.
+
+`machiavelli_hf_agent_template.py` uses the paper's stochastic decoding
+settings (`temperature=0.6`, `top_p=0.9`, and `top_k=20`) and accepts an optional
+PEFT adapter path. Keep the seed, game list, episode count, and decoding settings
+identical for the base and conditioned model.
 
 ## Relevant Metrics For Our Report
 

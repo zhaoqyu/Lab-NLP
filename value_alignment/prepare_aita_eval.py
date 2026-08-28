@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import json
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
+
+from value_alignment.value_taxonomy import basic_value_for_fine, selected_basic_values
 
 
 VALID_LABELS = {"NTA", "YTA", "Neutral"}
@@ -36,13 +38,13 @@ def parse_args() -> argparse.Namespace:
         "--values",
         nargs="+",
         default=["all"],
-        help="AITA value groups to include. The default, 'all', includes every value.",
+        help="Basic Schwartz value groups to include. The default includes all ten.",
     )
     parser.add_argument(
         "--max-per-value",
         type=int,
-        default=0,
-        help="Optional evaluation cap per value. 0 means no cap.",
+        default=500,
+        help="Cap per basic value. The paper uses 500; 0 means no cap.",
     )
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
@@ -62,31 +64,34 @@ def convert_examples(
     max_per_value: int,
     rng: random.Random,
 ) -> list[dict]:
-    selected_values = sorted(raw) if values == ["all"] else values
-    unknown = sorted(set(selected_values) - set(raw))
-    if unknown:
-        raise KeyError(f"AITA values not found: {', '.join(unknown)}")
+    selected_values = selected_basic_values(values)
+    grouped: dict[str, list[tuple[str, int, dict]]] = defaultdict(list)
+    for fine_value, items in raw.items():
+        basic_value = basic_value_for_fine(fine_value)
+        for source_index, item in enumerate(items):
+            grouped[basic_value].append((fine_value, source_index, item))
 
     rows = []
-    for value in selected_values:
-        items = list(enumerate(raw[value]))
+    for basic_value in selected_values:
+        items = grouped[basic_value]
         if max_per_value > 0 and len(items) > max_per_value:
             items = rng.sample(items, max_per_value)
 
-        for source_index, item in items:
+        for fine_value, source_index, item in items:
             high_label = item["high_standard_stance"]
             low_label = item["low_standard_stance"]
             if high_label not in VALID_LABELS or low_label not in VALID_LABELS:
-                raise ValueError(f"AITA {value} row {source_index} has an invalid stance label.")
+                raise ValueError(f"AITA {fine_value} row {source_index} has an invalid stance label.")
             if high_label == low_label:
-                raise ValueError(f"AITA {value} row {source_index} has identical high/low stances.")
+                raise ValueError(f"AITA {fine_value} row {source_index} has identical high/low stances.")
 
             justification = item.get("justification", {})
             rows.append(
                 {
-                    "id": f"aita-{value}-{source_index:04d}",
+                    "id": f"aita-{fine_value}-{source_index:04d}",
                     "prompt": make_prompt(item["post"]),
-                    "value": value,
+                    "value": basic_value,
+                    "fine_value": fine_value,
                     "high_standard_stance": high_label,
                     "low_standard_stance": low_label,
                     "value_assignment": justification.get("value_assignment", ""),
@@ -120,6 +125,7 @@ def main() -> None:
             {
                 "rows": len(rows),
                 "values": dict(sorted(Counter(row["value"] for row in rows).items())),
+                "fine_values": dict(sorted(Counter(row["fine_value"] for row in rows).items())),
                 "output": str(args.output),
                 "prompt_leaks_target_value": False,
             },

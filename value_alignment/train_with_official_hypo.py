@@ -17,7 +17,7 @@ from pathlib import Path
 import torch
 from datasets import load_dataset
 from peft import LoraConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, EarlyStoppingCallback
 
 from value_alignment.model_utils import resolve_model_name
 
@@ -30,21 +30,43 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=None, help="Optional JSON config file. CLI args override config values.")
     parser.add_argument("--method", choices=["dpo", "hypo"], default="hypo")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct")
+    parser.add_argument("--model", default="qwen3-8b")
     parser.add_argument("--ref-model", default=None)
     parser.add_argument("--model-aliases", type=Path, default=Path("value_alignment/configs/model_aliases.json"))
-    parser.add_argument("--train-file", type=Path, default=Path("value_alignment/data/kvs_dpo/train.jsonl"))
-    parser.add_argument("--eval-file", type=Path, default=Path("value_alignment/data/kvs_dpo/eval.jsonl"))
+    parser.add_argument(
+        "--train-file",
+        type=Path,
+        default=Path("value_alignment/data/paper_preferences/security/down/train.jsonl"),
+    )
+    parser.add_argument(
+        "--eval-file",
+        type=Path,
+        default=Path("value_alignment/data/paper_preferences/security/down/eval.jsonl"),
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("value_alignment/checkpoints"))
     parser.add_argument("--beta", type=float, default=0.1)
     parser.add_argument("--gamma", type=float, default=0.0)
     parser.add_argument("--tau", type=float, default=0.0)
-    parser.add_argument("--epochs", type=float, default=1.0)
+    parser.add_argument("--epochs", type=float, default=10.0)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=1e-5)
-    parser.add_argument("--max-length", type=int, default=2048)
-    parser.add_argument("--max-prompt-length", type=int, default=1536)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--warmup-ratio", type=float, default=0.15)
+    parser.add_argument("--max-length", type=int, default=512)
+    parser.add_argument("--max-prompt-length", type=int, default=384)
+    parser.add_argument("--lora-r", type=int, default=256)
+    parser.add_argument(
+        "--lora-alpha",
+        type=int,
+        default=0,
+        help="0 selects 1024 for Falcon3 and 512 for other paper models.",
+    )
+    parser.add_argument("--lora-dropout", type=float, default=0.0)
+    parser.add_argument("--early-stopping-patience", type=int, default=2)
+    parser.add_argument("--early-stopping-threshold", type=float, default=0.01)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--gradient-checkpointing", action="store_true")
+    parser.add_argument("--load-in-4bit", action="store_true", help="Use NF4 QLoRA.")
     parser.add_argument("--no-lora", action="store_true")
     args = parser.parse_args()
     if args.config is not None:
@@ -61,6 +83,10 @@ def parse_args() -> argparse.Namespace:
     for path_attr in ["train_file", "eval_file", "output_dir", "model_aliases"]:
         setattr(args, path_attr, Path(getattr(args, path_attr)))
     return args
+
+
+def default_lora_alpha(model_name: str) -> int:
+    return 1024 if "falcon3" in model_name.lower() else 512
 
 
 def main() -> None:
@@ -90,22 +116,43 @@ def main() -> None:
         tokenizer.bos_token = tokenizer.eos_token
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-    model_kwargs = {
-        "torch_dtype": dtype,
-        "device_map": "auto" if torch.cuda.is_available() else None,
-    }
+    model_kwargs = {"torch_dtype": dtype}
+    if args.load_in_4bit:
+        if args.no_lora:
+            raise ValueError("--load-in-4bit requires LoRA; remove --no-lora.")
+        if not torch.cuda.is_available():
+            raise RuntimeError("--load-in-4bit requires a CUDA GPU and bitsandbytes.")
+        model_kwargs.update(
+            {
+                "quantization_config": BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=dtype,
+                    bnb_4bit_use_double_quant=True,
+                ),
+                "device_map": {"": torch.cuda.current_device()},
+            }
+        )
     model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+    if args.gradient_checkpointing:
+        model.config.use_cache = False
 
     ref_model = None
+    if ref_model_name and not args.no_lora:
+        raise ValueError(
+            "The official trainer uses the policy with its LoRA adapter disabled as the frozen "
+            "reference. Use --no-lora before supplying a separate --ref-model."
+        )
     if ref_model_name:
         ref_model = AutoModelForCausalLM.from_pretrained(ref_model_name, **model_kwargs)
 
     peft_config = None
     if not args.no_lora:
+        lora_alpha = args.lora_alpha or default_lora_alpha(model_name)
         peft_config = LoraConfig(
-            r=16,
-            lora_alpha=32,
-            lora_dropout=0.05,
+            r=args.lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=args.lora_dropout,
             bias="none",
             task_type="CAUSAL_LM",
             target_modules="all-linear",
@@ -117,18 +164,25 @@ def main() -> None:
         beta=args.beta,
         num_train_epochs=args.epochs,
         learning_rate=args.lr,
+        warmup_ratio=args.warmup_ratio,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         max_length=args.max_length,
         max_prompt_length=args.max_prompt_length,
         logging_steps=10,
-        save_steps=200,
-        eval_steps=200,
-        evaluation_strategy="steps",
-        save_strategy="steps",
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_rewards/margins",
+        greater_is_better=True,
+        save_total_limit=2,
+        bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+        fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
+        gradient_checkpointing=args.gradient_checkpointing,
         remove_unused_columns=False,
         report_to=[],
+        seed=args.seed,
         im_enable=args.method == "hypo",
         im_gamma=args.gamma,
         im_tau=args.tau,
@@ -143,6 +197,12 @@ def main() -> None:
         tokenizer=tokenizer,
         peft_config=peft_config,
         loss_type="sigmoid",
+        callbacks=[
+            EarlyStoppingCallback(
+                early_stopping_patience=args.early_stopping_patience,
+                early_stopping_threshold=args.early_stopping_threshold,
+            )
+        ],
     )
 
     trainer.train()

@@ -7,8 +7,10 @@ from pathlib import Path
 
 
 DEFAULT_MODEL_ALIASES = {
+    "qwen3-8b": "Qwen/Qwen3-8B",
     "qwen2.5-7b": "Qwen/Qwen2.5-7B-Instruct",
     "qwen2.5-1.5b": "Qwen/Qwen2.5-1.5B-Instruct",
+    "falcon3-7b": "tiiuae/Falcon3-7B-Instruct",
     "mistral-7b": "mistralai/Mistral-7B-Instruct-v0.3",
     "mistral-7b-v02": "mistralai/Mistral-7B-Instruct-v0.2",
     "llama3.1-8b": "meta-llama/Llama-3.1-8B-Instruct",

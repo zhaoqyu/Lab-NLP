@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure AITA value-score changes between a base and a trained model."""
+"""Evaluate one target-specific checkpoint with the paper's AITA metric."""
 
 from __future__ import annotations
 
@@ -12,27 +12,39 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from value_alignment.evaluation.aita_metrics import summarize, value_score
+from value_alignment.evaluation.aita_metrics import LABELS, probability_gain, summarize
 from value_alignment.model_utils import resolve_model_name
-
-
-LABELS = ["NTA", "YTA", "Neutral"]
+from value_alignment.value_taxonomy import canonical_basic_value
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-model", required=True)
-    parser.add_argument("--trained-model", required=True)
+    parser.add_argument("--base-model", required=True, help="Matched baseline-tuned checkpoint or base model.")
+    parser.add_argument("--conditioned-model", required=True)
+    parser.add_argument(
+        "--base-adapter",
+        type=Path,
+        default=None,
+        help="Optional baseline-control PEFT adapter loaded on --base-model.",
+    )
+    parser.add_argument(
+        "--conditioned-adapter",
+        type=Path,
+        default=None,
+        help="Optional target-specific PEFT adapter loaded on --conditioned-model.",
+    )
+    parser.add_argument("--target-value", required=True)
     parser.add_argument("--test-file", type=Path, default=Path("value_alignment/data/aita_eval/test.jsonl"))
     parser.add_argument("--model-aliases", type=Path, default=Path("value_alignment/configs/model_aliases.json"))
-    parser.add_argument("--output-json", type=Path, default=Path("value_alignment/results/aita_value_shift.json"))
-    parser.add_argument("--output-csv", type=Path, default=Path("value_alignment/results/aita_value_shift.csv"))
+    parser.add_argument("--output-json", type=Path, default=Path("value_alignment/results/aita_probability_gain.json"))
+    parser.add_argument("--output-csv", type=Path, default=Path("value_alignment/results/aita_probability_gain.csv"))
+    parser.add_argument("--unused-stance-weight", type=float, default=0.5)
     parser.add_argument("--max-examples", type=int, default=0)
     parser.add_argument("--max-length", type=int, default=2048)
     return parser.parse_args()
 
 
-def load_model(model_name: str, aliases_path: Path):
+def load_model(model_name: str, aliases_path: Path, adapter: Path | None = None):
     resolved = resolve_model_name(model_name, aliases_path)
     tokenizer = AutoTokenizer.from_pretrained(resolved, use_fast=True)
     if tokenizer.pad_token is None:
@@ -43,13 +55,16 @@ def load_model(model_name: str, aliases_path: Path):
         torch_dtype=dtype,
         device_map="auto" if torch.cuda.is_available() else None,
     )
+    if adapter is not None:
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(model, str(adapter))
     model.eval()
-    return model, tokenizer
+    return model, tokenizer, resolved
 
 
 def label_logprob(model, tokenizer, prompt: str, label: str, max_length: int) -> float:
-    label_text = " " + label
-    label_ids = tokenizer(label_text, return_tensors="pt", add_special_tokens=False).input_ids.to(model.device)
+    label_ids = tokenizer(" " + label, return_tensors="pt", add_special_tokens=False).input_ids.to(model.device)
     prompt_budget = max_length - label_ids.shape[1]
     if prompt_budget < 1:
         raise ValueError("--max-length is too small to hold a label completion.")
@@ -64,95 +79,96 @@ def label_logprob(model, tokenizer, prompt: str, label: str, max_length: int) ->
         logits = model(input_ids).logits
     log_probs = torch.log_softmax(logits[:, :-1, :], dim=-1)
     start = prompt_ids.shape[1] - 1
-    total = 0.0
-    for i, token_id in enumerate(label_ids[0]):
-        total += float(log_probs[0, start + i, token_id])
-    return total
+    return sum(float(log_probs[0, start + offset, token_id]) for offset, token_id in enumerate(label_ids[0]))
 
 
 def label_distribution(model, tokenizer, prompt: str, max_length: int) -> dict[str, float]:
     logps = {label: label_logprob(model, tokenizer, prompt, label, max_length) for label in LABELS}
     max_logp = max(logps.values())
-    probs = {label: math.exp(value - max_logp) for label, value in logps.items()}
-    total = sum(probs.values())
-    return {label: prob / total for label, prob in probs.items()}
-
-
-def expected_label(row: dict) -> str:
-    if "high_standard_stance" in row:
-        return row["high_standard_stance"]
-    chosen = row["chosen"].strip()
-    for label in LABELS:
-        if chosen.startswith(label):
-            return label
-    raise ValueError("Could not infer expected high-standard label.")
-
-
-def low_standard_label(row: dict) -> str:
-    if "low_standard_stance" in row:
-        return row["low_standard_stance"]
-    rejected = row["rejected"].strip()
-    for label in LABELS:
-        if rejected.startswith(label):
-            return label
-    raise ValueError("Could not infer expected low-standard label.")
+    unnormalized = {label: math.exp(value - max_logp) for label, value in logps.items()}
+    denominator = sum(unnormalized.values())
+    return {label: value / denominator for label, value in unnormalized.items()}
 
 
 def main() -> None:
     args = parse_args()
-    examples = [json.loads(line) for line in args.test_file.open(encoding="utf-8")]
+    target_value = canonical_basic_value(args.target_value)
+    examples = [
+        row
+        for row in (json.loads(line) for line in args.test_file.open(encoding="utf-8"))
+        if canonical_basic_value(row["value"]) == target_value
+    ]
     if args.max_examples > 0:
         examples = examples[: args.max_examples]
+    if not examples:
+        raise SystemExit(f"No AITA examples found for target value {target_value}.")
 
-    base_model, base_tokenizer = load_model(args.base_model, args.model_aliases)
-    trained_model, trained_tokenizer = load_model(args.trained_model, args.model_aliases)
+    base_model, base_tokenizer, resolved_base = load_model(
+        args.base_model,
+        args.model_aliases,
+        args.base_adapter,
+    )
+    conditioned_model, conditioned_tokenizer, resolved_conditioned = load_model(
+        args.conditioned_model,
+        args.model_aliases,
+        args.conditioned_adapter,
+    )
 
     rows = []
-    for idx, row in enumerate(examples):
-        high_label = expected_label(row)
-        low_label = low_standard_label(row)
-        if high_label == low_label:
-            raise ValueError(f"Example {idx} has identical high- and low-standard labels: {high_label}")
+    for index, row in enumerate(examples):
+        high_label = row["high_standard_stance"]
+        low_label = row["low_standard_stance"]
         prompt = row["prompt"] + "\n\nAnswer:"
         base_probs = label_distribution(base_model, base_tokenizer, prompt, args.max_length)
-        trained_probs = label_distribution(trained_model, trained_tokenizer, prompt, args.max_length)
-        base_pred = max(base_probs, key=base_probs.get)
-        trained_pred = max(trained_probs, key=trained_probs.get)
-        base_score = value_score(base_probs, high_label, low_label)
-        trained_score = value_score(trained_probs, high_label, low_label)
+        conditioned_probs = label_distribution(
+            conditioned_model,
+            conditioned_tokenizer,
+            prompt,
+            args.max_length,
+        )
+        gain = probability_gain(
+            base_probs,
+            conditioned_probs,
+            high_label,
+            low_label,
+            args.unused_stance_weight,
+        )
+        strict_gain = probability_gain(base_probs, conditioned_probs, high_label, low_label, 0.0)
+        unused_label = next(label for label in LABELS if label not in {high_label, low_label})
         rows.append(
             {
-                "idx": idx,
-                "id": row.get("id", idx),
-                "value": row.get("value", "unknown"),
+                "idx": index,
+                "id": row.get("id", index),
+                "value": target_value,
+                "fine_value": row.get("fine_value"),
                 "high_standard_label": high_label,
                 "low_standard_label": low_label,
-                "base_pred": base_pred,
-                "trained_pred": trained_pred,
+                "unused_label": unused_label,
                 "base_high_prob": base_probs[high_label],
-                "trained_high_prob": trained_probs[high_label],
+                "conditioned_high_prob": conditioned_probs[high_label],
                 "base_low_prob": base_probs[low_label],
-                "trained_low_prob": trained_probs[low_label],
-                "base_value_score": base_score,
-                "trained_value_score": trained_score,
-                "value_score_change": trained_score - base_score,
-                "probability_gain": trained_probs[high_label] - base_probs[high_label],
-                "base_correct": int(base_pred == high_label),
-                "trained_correct": int(trained_pred == high_label),
-                "base_pairwise_correct": int(base_score > 0.5),
-                "trained_pairwise_correct": int(trained_score > 0.5),
+                "conditioned_low_prob": conditioned_probs[low_label],
+                "base_unused_prob": base_probs[unused_label],
+                "conditioned_unused_prob": conditioned_probs[unused_label],
+                "probability_gain": gain,
+                "strict_probability_gain": strict_gain,
             }
         )
 
     result = {
         "metric": {
-            "name": "AITA value score",
-            "definition": "P(high-standard label) / (P(high-standard label) + P(low-standard label))",
-            "range": [0.0, 1.0],
-            "positive_change": "The trained model moved toward the annotated high-value stance.",
+            "name": "AITA Probability Gain",
+            "definition": "delta(low) - delta(high) + unused_weight * delta(unused)",
+            "unused_stance_weight": args.unused_stance_weight,
+            "positive_change": "Probability mass moved in the expected target-value down-regulation direction.",
         },
-        "base_model": args.base_model,
-        "trained_model": args.trained_model,
+        "target_value": target_value,
+        "base_model": resolved_base,
+        "base_adapter": str(args.base_adapter) if args.base_adapter is not None else None,
+        "conditioned_model": resolved_conditioned,
+        "conditioned_adapter": (
+            str(args.conditioned_adapter) if args.conditioned_adapter is not None else None
+        ),
         "test_file": str(args.test_file),
         "summary": summarize(rows),
         "rows": rows,
@@ -161,7 +177,7 @@ def main() -> None:
     args.output_csv.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     with args.output_csv.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]) if rows else ["idx"])
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
     print(json.dumps(result["summary"], indent=2))
