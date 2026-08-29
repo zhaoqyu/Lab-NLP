@@ -9,6 +9,7 @@ we can train on the local KVS preference JSONL files used in this lab project.
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import sys
@@ -19,6 +20,7 @@ from datasets import load_dataset
 from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, EarlyStoppingCallback
 
+from value_alignment.experiment_utils import git_metadata, tagged_run_dir, write_run_manifest
 from value_alignment.model_utils import resolve_model_name
 
 
@@ -44,6 +46,11 @@ def parse_args() -> argparse.Namespace:
         default=Path("value_alignment/data/paper_preferences/security/down/eval.jsonl"),
     )
     parser.add_argument("--output-dir", type=Path, default=Path("value_alignment/checkpoints"))
+    parser.add_argument(
+        "--run-tag",
+        default="",
+        help="Optional isolated run name; outputs go under <method>/runs/<run-tag>.",
+    )
     parser.add_argument("--beta", type=float, default=0.1)
     parser.add_argument("--gamma", type=float, default=0.0)
     parser.add_argument("--tau", type=float, default=0.0)
@@ -108,6 +115,30 @@ def main() -> None:
 
     model_name = resolve_model_name(args.model, args.model_aliases)
     ref_model_name = resolve_model_name(args.ref_model, args.model_aliases) if args.ref_model else None
+    method_dir = tagged_run_dir(args.output_dir / args.method, args.run_tag)
+    lora_alpha = args.lora_alpha or default_lora_alpha(model_name)
+    manifest_inputs = {
+        "train_data": args.train_file,
+        "eval_data": args.eval_file,
+        "model_aliases": args.model_aliases,
+        "official_hypo_config": OFFICIAL_HYPO_DIR / "hypo_config.py",
+        "official_hypo_trainer": OFFICIAL_HYPO_DIR / "hypo_trainer.py",
+    }
+    manifest_metadata = {
+        "trainer": "official_hypo",
+        "method": args.method,
+        "resolved_model": model_name,
+        "resolved_reference_model": ref_model_name or model_name,
+        "reference_implementation": git_metadata(OFFICIAL_HYPO_DIR),
+        "effective_lora_alpha": None if args.no_lora else lora_alpha,
+        "effective_output_dir": str(method_dir),
+    }
+    write_run_manifest(
+        method_dir,
+        args,
+        manifest_inputs,
+        metadata=manifest_metadata,
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     if tokenizer.pad_token is None:
@@ -148,7 +179,6 @@ def main() -> None:
 
     peft_config = None
     if not args.no_lora:
-        lora_alpha = args.lora_alpha or default_lora_alpha(model_name)
         peft_config = LoraConfig(
             r=args.lora_r,
             lora_alpha=lora_alpha,
@@ -158,35 +188,39 @@ def main() -> None:
             target_modules="all-linear",
         )
 
-    method_dir = args.output_dir / args.method
-    training_args = DPOConfig(
-        output_dir=str(method_dir),
-        beta=args.beta,
-        num_train_epochs=args.epochs,
-        learning_rate=args.lr,
-        warmup_ratio=args.warmup_ratio,
-        per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.grad_accum,
-        max_length=args.max_length,
-        max_prompt_length=args.max_prompt_length,
-        logging_steps=10,
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_rewards/margins",
-        greater_is_better=True,
-        save_total_limit=2,
-        bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
-        fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
-        gradient_checkpointing=args.gradient_checkpointing,
-        remove_unused_columns=False,
-        report_to=[],
-        seed=args.seed,
-        im_enable=args.method == "hypo",
-        im_gamma=args.gamma,
-        im_tau=args.tau,
+    training_kwargs = {
+        "output_dir": str(method_dir),
+        "beta": args.beta,
+        "num_train_epochs": args.epochs,
+        "learning_rate": args.lr,
+        "warmup_ratio": args.warmup_ratio,
+        "per_device_train_batch_size": args.batch_size,
+        "per_device_eval_batch_size": args.batch_size,
+        "gradient_accumulation_steps": args.grad_accum,
+        "max_length": args.max_length,
+        "max_prompt_length": args.max_prompt_length,
+        "logging_steps": 10,
+        "save_strategy": "epoch",
+        "load_best_model_at_end": True,
+        "metric_for_best_model": "eval_rewards/margins",
+        "greater_is_better": True,
+        "save_total_limit": 2,
+        "bf16": torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+        "fp16": torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
+        "gradient_checkpointing": args.gradient_checkpointing,
+        "remove_unused_columns": False,
+        "report_to": [],
+        "seed": args.seed,
+        "im_enable": args.method == "hypo",
+        "im_gamma": args.gamma,
+        "im_tau": args.tau,
+    }
+    config_parameters = inspect.signature(DPOConfig.__init__).parameters
+    strategy_key = (
+        "eval_strategy" if "eval_strategy" in config_parameters else "evaluation_strategy"
     )
+    training_kwargs[strategy_key] = "epoch"
+    training_args = DPOConfig(**training_kwargs)
 
     trainer = DPOTrainer(
         model=model,
@@ -206,8 +240,16 @@ def main() -> None:
     )
 
     trainer.train()
-    trainer.save_model(str(method_dir / "final"))
-    tokenizer.save_pretrained(str(method_dir / "final"))
+    final_dir = method_dir / "final"
+    trainer.save_model(str(final_dir))
+    tokenizer.save_pretrained(str(final_dir))
+    write_run_manifest(
+        method_dir,
+        args,
+        manifest_inputs,
+        metadata={**manifest_metadata, "final_model_dir": str(final_dir)},
+        status="completed",
+    )
 
 
 if __name__ == "__main__":

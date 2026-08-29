@@ -30,17 +30,25 @@ MODEL_INDEX=$((TASK_INDEX / (${#VALUES[@]} * ${#METHODS[@]})))
 MODEL="${MODEL_OVERRIDE:-${MODELS[$MODEL_INDEX]}}"
 METHOD="${METHOD_OVERRIDE:-${METHODS[$METHOD_INDEX]}}"
 TARGET="${VALUE_OVERRIDE:-${VALUES[$VALUE_INDEX]}}"
+CHECKPOINT_TAG="${CHECKPOINT_TAG:-${RUN_TAG:-}}"
+RESULT_TAG="${RESULT_TAG:-${RUN_TAG:-}}"
+validate_run_tag "$CHECKPOINT_TAG"
+validate_run_tag "$RESULT_TAG"
 
 BASE_ADAPTER=""
 if [[ "$METHOD" == "sft" ]]; then
-  BASE_ADAPTER="${SFT_CHECKPOINT_ROOT:-value_alignment/checkpoints/paper_sft}/$MODEL/baseline/final"
-  CONDITIONED_ADAPTER="${SFT_CHECKPOINT_ROOT:-value_alignment/checkpoints/paper_sft}/$MODEL/$TARGET/final"
+  BASE_ROOT="${SFT_CHECKPOINT_ROOT:-value_alignment/checkpoints/paper_sft}/$MODEL/baseline"
+  CONDITIONED_ROOT="${SFT_CHECKPOINT_ROOT:-value_alignment/checkpoints/paper_sft}/$MODEL/$TARGET"
+  BASE_ADAPTER="$(tagged_run_path "$BASE_ROOT" "$CHECKPOINT_TAG")/final"
+  CONDITIONED_ADAPTER="$(tagged_run_path "$CONDITIONED_ROOT" "$CHECKPOINT_TAG")/final"
 else
-  CONDITIONED_ADAPTER="${PREFERENCE_CHECKPOINT_ROOT:-value_alignment/checkpoints/paper_preference}/$MODEL/$TARGET/$METHOD/final"
+  CONDITIONED_ROOT="${PREFERENCE_CHECKPOINT_ROOT:-value_alignment/checkpoints/paper_preference}/$MODEL/$TARGET/$METHOD"
+  CONDITIONED_ADAPTER="$(tagged_run_path "$CONDITIONED_ROOT" "$CHECKPOINT_TAG")/final"
 fi
 
 TEST_FILE="${TEST_FILE:-value_alignment/data/aita_eval/test.jsonl}"
 OUTPUT_DIR="${OUTPUT_ROOT:-value_alignment/results/paper/aita}/$MODEL/$METHOD"
+OUTPUT_DIR="$(tagged_run_path "$OUTPUT_DIR" "$RESULT_TAG")"
 if [[ ! -f "$TEST_FILE" ]]; then
   echo "Missing AITA test file: $TEST_FILE" >&2
   echo "Run python -m value_alignment.prepare_aita_eval first." >&2
@@ -54,7 +62,7 @@ for ADAPTER in "$BASE_ADAPTER" "$CONDITIONED_ADAPTER"; do
 done
 mkdir -p "$OUTPUT_DIR"
 
-echo "Evaluating AITA: model=$MODEL method=$METHOD target=$TARGET"
+echo "Evaluating AITA: model=$MODEL method=$METHOD target=$TARGET checkpoint_tag=${CHECKPOINT_TAG:-legacy} result_tag=${RESULT_TAG:-legacy}"
 check_gpu_environment
 
 CMD=(

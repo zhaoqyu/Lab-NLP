@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 import unittest
 
-from value_alignment.evaluation.aita_metrics import probability_gain, summarize
+from value_alignment.evaluation.aita_metrics import one_sided_t_test, probability_gain, summarize
 from value_alignment.evaluation.compare_kvs_results import compare_results
 from value_alignment.prepare_aita_eval import convert_examples as convert_aita_examples
 from value_alignment.prepare_kvs_dpo import convert_split as convert_kvs_split
@@ -93,6 +93,20 @@ class KvsSftDataTest(unittest.TestCase):
         self.assertEqual(by_value["Benevolence"]["rating"], 4)
         self.assertEqual(by_value["Benevolence"]["response"], "4")
 
+    def test_up_regulation_uses_rating_six_and_is_labeled_up(self) -> None:
+        rows = make_sft_rows(
+            [kvs_item("Security_personal", "Stay safe", "Take the risk")],
+            "train",
+            ["Task"],
+            ["Rating: {rating}"],
+            {"kvs-train-0000": 4},
+            target_value="Security",
+            target_rating=6,
+        )
+
+        self.assertEqual(rows[0]["rating"], 6)
+        self.assertEqual(rows[0]["intervention"], "up")
+
 
 class AitaEvaluationDataTest(unittest.TestCase):
     def test_prompt_is_neutral_and_refined_value_is_aggregated(self) -> None:
@@ -145,12 +159,41 @@ class AitaMetricTest(unittest.TestCase):
             [
                 {"value": "Security", "probability_gain": 0.1, "strict_probability_gain": 0.08},
                 {"value": "Security", "probability_gain": 0.2, "strict_probability_gain": 0.12},
-            ]
+            ],
+            bootstrap_replicates=100,
         )
 
         self.assertAlmostEqual(result["overall"]["mean_probability_gain"], 0.15)
         self.assertAlmostEqual(result["overall"]["mean_probability_gain_percentage_points"], 15.0)
         self.assertAlmostEqual(result["overall"]["strict_mean_probability_gain"], 0.1)
+        self.assertLessEqual(result["overall"]["bootstrap_ci_95_low"], 0.15)
+        self.assertGreaterEqual(result["overall"]["bootstrap_ci_95_high"], 0.15)
+
+    def test_up_regulation_uses_lower_tail_significance(self) -> None:
+        result = one_sided_t_test([-0.2, -0.1, -0.3], alternative="less")
+
+        self.assertLess(result["t_statistic"], 0)
+        if result["p_value"] is not None:
+            self.assertLess(result["p_value"], 0.05)
+
+        summary_result = summarize(
+            [
+                {
+                    "value": "Security",
+                    "probability_gain": -0.2,
+                    "strict_probability_gain": -0.2,
+                },
+                {
+                    "value": "Security",
+                    "probability_gain": -0.1,
+                    "strict_probability_gain": -0.1,
+                },
+            ],
+            bootstrap_replicates=100,
+            expected_direction="less",
+        )["overall"]
+        self.assertAlmostEqual(summary_result["expected_direction_mean_effect"], 0.15)
+        self.assertEqual(summary_result["expected_direction_success_fraction"], 1.0)
 
 
 class KvsMetricTest(unittest.TestCase):
@@ -167,7 +210,7 @@ class KvsMetricTest(unittest.TestCase):
             {"id": "c", "source_id": "z", "value": "Benevolence", "rating": 4},
             {"id": "d", "source_id": "w", "value": "Power", "rating": 1},
         ]
-        result = compare_results(base, conditioned, "Security")
+        result = compare_results(base, conditioned, "Security", bootstrap_replicates=100)
 
         self.assertAlmostEqual(result["target_value_rating_drop"], 2.0)
         self.assertAlmostEqual(result["other_values_mean_absolute_fluctuation"], 1.5)
@@ -181,7 +224,7 @@ class KvsMetricTest(unittest.TestCase):
             {"id": "a", "value": "Security", "ratings": [4, 3, 2]},
             {"id": "b", "value": "Power", "ratings": [3, 4, 2]},
         ]
-        result = compare_results(base, conditioned, "Security")
+        result = compare_results(base, conditioned, "Security", bootstrap_replicates=100)
 
         self.assertEqual(result["num_runs"], 3)
         self.assertEqual(
@@ -191,6 +234,33 @@ class KvsMetricTest(unittest.TestCase):
         self.assertAlmostEqual(result["target_value_rating_drop"], 2.0)
         self.assertAlmostEqual(result["target_value_rating_drop_sample_std"], 1.0)
         self.assertAlmostEqual(result["other_values_mean_absolute_fluctuation"], 2 / 3)
+
+    def test_bootstrap_clusters_prompt_variants_by_source_description(self) -> None:
+        base = [
+            {"id": "a1", "source_id": "target-a", "value": "Security", "rating": 5},
+            {"id": "a2", "source_id": "target-a", "value": "Security", "rating": 5},
+            {"id": "b1", "source_id": "target-b", "value": "Security", "rating": 4},
+            {"id": "c1", "source_id": "other-c", "value": "Power", "rating": 3},
+            {"id": "c2", "source_id": "other-c", "value": "Power", "rating": 3},
+        ]
+        conditioned = [
+            {"id": "a1", "source_id": "target-a", "value": "Security", "rating": 3},
+            {"id": "a2", "source_id": "target-a", "value": "Security", "rating": 3},
+            {"id": "b1", "source_id": "target-b", "value": "Security", "rating": 3},
+            {"id": "c1", "source_id": "other-c", "value": "Power", "rating": 4},
+            {"id": "c2", "source_id": "other-c", "value": "Power", "rating": 2},
+        ]
+
+        result = compare_results(
+            base,
+            conditioned,
+            "Security",
+            bootstrap_replicates=100,
+        )
+
+        self.assertEqual(result["target_source_cluster_count"], 2)
+        self.assertEqual(result["other_values_source_cluster_count"], 1)
+        self.assertIsNotNone(result["target_value_rating_drop_cluster_bootstrap_ci_95_low"])
 
 
 if __name__ == "__main__":

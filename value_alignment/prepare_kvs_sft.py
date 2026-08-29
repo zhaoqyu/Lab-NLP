@@ -28,6 +28,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--target-values", nargs="+", default=["all"])
     parser.add_argument("--target-rating", type=int, choices=range(1, 7), default=1)
+    parser.add_argument(
+        "--intervention",
+        choices=["auto", "down", "up"],
+        default="auto",
+        help="auto maps target rating 1 to down and 6 to up.",
+    )
     parser.add_argument("--skip-baseline-control", action="store_true")
     return parser.parse_args()
 
@@ -51,7 +57,18 @@ def make_sft_rows(
     baseline_ratings: dict[str, int],
     target_value: str | None,
     target_rating: int,
+    intervention: str | None = None,
 ) -> list[dict]:
+    if target_value is None:
+        intervention_name = "baseline"
+    elif intervention is not None:
+        intervention_name = intervention
+    elif target_rating == 1:
+        intervention_name = "down"
+    elif target_rating == 6:
+        intervention_name = "up"
+    else:
+        intervention_name = "target"
     rows = []
     for index, item in enumerate(items):
         source_id = kvs_item_id(split, index)
@@ -70,7 +87,7 @@ def make_sft_rows(
                     "baseline_rating": baseline_rating,
                     "target_value": target_value,
                     "is_target": is_target,
-                    "intervention": "baseline" if target_value is None else "down",
+                    "intervention": intervention_name,
                 }
             )
     return rows
@@ -90,6 +107,16 @@ def main() -> None:
     tasks = data["tasks"]
     response_templates = data["response_template"]
     targets = selected_basic_values(args.target_values)
+    intervention = args.intervention
+    if intervention == "auto":
+        if args.target_rating == 1:
+            intervention = "down"
+        elif args.target_rating == 6:
+            intervention = "up"
+        else:
+            raise ValueError(
+                "--intervention must be explicit when --target-rating is neither 1 nor 6."
+            )
 
     expected_rating_ids = {
         kvs_item_id(split, index)
@@ -110,7 +137,9 @@ def main() -> None:
     dataset_specs: list[tuple[str, str | None]] = []
     if not args.skip_baseline_control:
         dataset_specs.append(("baseline", None))
-    dataset_specs.extend((f"{value_slug(target)}/down", target) for target in targets)
+    dataset_specs.extend(
+        (f"{value_slug(target)}/{intervention}", target) for target in targets
+    )
 
     for relative_dir, target_value in dataset_specs:
         split_summary = {}
@@ -123,6 +152,7 @@ def main() -> None:
                 ratings,
                 target_value,
                 args.target_rating,
+                None if target_value is None else intervention,
             )
             write_jsonl(args.output_root / relative_dir / f"{split}.jsonl", rows)
             split_summary[split] = {
