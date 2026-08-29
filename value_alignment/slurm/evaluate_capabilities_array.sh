@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=kvs-eval
+#SBATCH --job-name=cap-eval
 #SBATCH --partition=mlgpu_medium
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
@@ -27,12 +27,11 @@ TASK_INDEX=$((10#$TASK_ID))
 MODEL_INDEX=$((TASK_INDEX / VARIANTS_PER_MODEL))
 VARIANT_INDEX=$((TASK_INDEX % VARIANTS_PER_MODEL))
 MODEL="${MODEL_OVERRIDE:-${MODELS[$MODEL_INDEX]}}"
-ADAPTER=""
-TARGET=""
 CHECKPOINT_TAG="${CHECKPOINT_TAG:-${RUN_TAG:-}}"
 RESULT_TAG="${RESULT_TAG:-${RUN_TAG:-}}"
 validate_run_tag "$CHECKPOINT_TAG"
 validate_run_tag "$RESULT_TAG"
+ADAPTER=""
 
 if (( VARIANT_INDEX == 0 )); then
   RUN_NAME="base"
@@ -57,35 +56,46 @@ else
   ADAPTER="$(tagged_run_path "$ADAPTER_ROOT" "$CHECKPOINT_TAG")/final"
 fi
 
-EVAL_FILE="${EVAL_FILE:-value_alignment/data/kvs_survey/test.jsonl}"
-OUTPUT_DIR="${OUTPUT_ROOT:-value_alignment/results/paper/kvs}/$MODEL"
-OUTPUT_DIR="$(tagged_run_path "$OUTPUT_DIR" "$RESULT_TAG")"
-if [[ ! -f "$EVAL_FILE" ]]; then
-  echo "Missing KVS survey file: $EVAL_FILE" >&2
-  echo "Run python -m value_alignment.prepare_kvs_eval first." >&2
-  exit 1
-fi
+MODEL_OUTPUT_ROOT="${OUTPUT_ROOT:-value_alignment/results/paper/capabilities}/$MODEL"
+MODEL_OUTPUT_ROOT="$(tagged_run_path "$MODEL_OUTPUT_ROOT" "$RESULT_TAG")"
+OUTPUT_DIR="$MODEL_OUTPUT_ROOT/$RUN_NAME"
 if [[ -n "$ADAPTER" && ! -f "$ADAPTER/adapter_config.json" ]]; then
   echo "Missing PEFT adapter: $ADAPTER/adapter_config.json" >&2
   exit 1
 fi
 mkdir -p "$OUTPUT_DIR"
 
-echo "Evaluating KVS: model=$MODEL run=$RUN_NAME target=${TARGET:-none} checkpoint_tag=${CHECKPOINT_TAG:-legacy} result_tag=${RESULT_TAG:-legacy}"
+echo "Capability evaluation: model=$MODEL run=$RUN_NAME checkpoint_tag=${CHECKPOINT_TAG:-legacy} result_tag=${RESULT_TAG:-legacy}"
 check_gpu_environment
+python -c 'import lm_eval' || {
+  echo "lm-evaluation-harness is missing; install value_alignment/requirements.txt." >&2
+  exit 1
+}
 
+read -r -a TASK_LIST <<< "${TASKS:-mmlu gsm8k}"
 CMD=(
-  python -u -m value_alignment.evaluate_kvs_survey
+  python -u -m value_alignment.evaluation.evaluate_capabilities
   --model "$MODEL"
-  --eval-file "$EVAL_FILE"
-  --output "$OUTPUT_DIR/$RUN_NAME.json"
-  --output-csv "$OUTPUT_DIR/$RUN_NAME.csv"
-  --num-runs "${NUM_RUNS:-3}"
-  --temperature "${TEMPERATURE:-0.5}"
-  --batch-size "${BATCH_SIZE:-16}"
-  --seed "${EVAL_SEED:-${SEED:-42}}"
+  --tasks "${TASK_LIST[@]}"
+  --output-dir "$OUTPUT_DIR"
+  --batch-size "${BATCH_SIZE:-auto}"
+  --device "${DEVICE:-cuda:0}"
+  --dtype "${DTYPE:-bfloat16}"
+  --seed "${EVAL_SEED:-42}"
 )
 if [[ -n "$ADAPTER" ]]; then
   CMD+=(--adapter "$ADAPTER")
+fi
+if [[ -n "${LIMIT:-}" ]]; then
+  CMD+=(--limit "$LIMIT")
+fi
+if [[ "${APPLY_CHAT_TEMPLATE:-0}" == "1" ]]; then
+  CMD+=(--apply-chat-template)
+fi
+if [[ "${LOG_SAMPLES:-0}" == "1" ]]; then
+  CMD+=(--log-samples)
+fi
+if [[ "${QLORA:-0}" == "1" ]]; then
+  CMD+=(--load-in-4bit)
 fi
 "${CMD[@]}"

@@ -54,6 +54,13 @@ An existing clone can instead be selected with `HYPO_REPO=/path/to/repo`.
 Llama 3.1 is gated on Hugging Face, so accept its license and authenticate on
 the cluster before starting those jobs.
 
+The official HyPO release pins Transformers 4.45.2, while Qwen3 support requires
+the 4.51 series used here. The local wrapper keeps the official
+`hypo_trainer.py` loss unchanged and selects `eval_strategy` versus the legacy
+`evaluation_strategy` argument from the installed `DPOConfig` signature.
+Run the one-job DPO/HyPO smoke test before submitting the full array whenever the
+cluster environment is rebuilt.
+
 ## 1. Prepare Static Data
 
 These commands do not need a GPU:
@@ -156,7 +163,62 @@ from the official HyPO repository. Setting `--method dpo` disables the HyPO
 reference-margin clipping; `--method hypo` enables it. Both methods consume the
 same target-specific KVS pairs.
 
-## 5. KVS Intrinsic Evaluation
+### Repeated training runs
+
+Use at least three training seeds for the final tables. `RUN_TAG` prevents one
+seed from overwriting another and every run writes `run_manifest.json` with the
+full arguments, Git revision, package versions, SLURM IDs, and SHA-256 hashes of
+its input files:
+
+```bash
+for SEED in 42 43 44; do
+  sbatch --export=ALL,SEED="$SEED",RUN_TAG="seed$SEED" \
+    value_alignment/slurm/train_sft_array.sh
+  sbatch --export=ALL,SEED="$SEED",RUN_TAG="seed$SEED" \
+    value_alignment/slurm/train_dpo_hypo_array.sh
+done
+```
+
+Tagged SFT checkpoints use
+`.../<model>/<value>/runs/<tag>/final`; tagged preference checkpoints use
+`.../<model>/<value>/<method>/runs/<tag>/final`. Omitting `RUN_TAG` preserves
+the original directory layout.
+
+## 5. HyPO Reference-Mismatch Diagnostic
+
+Before interpreting a HyPO-DPO difference, measure whether the frozen reference
+actually disagrees with the target-specific preference pairs:
+
+```bash
+sbatch value_alignment/slurm/analyze_reference_mismatch_array.sh
+python -m value_alignment.evaluation.summarize_reference_mismatch
+```
+
+For each chosen/rejected pair this computes the same sequence log-probability
+margin used by TRL 0.9.6:
+
+```text
+reference margin = log p_ref(chosen | prompt) - log p_ref(rejected | prompt)
+mismatch = reference margin < 0
+HyPO reference term = max(0, reference margin)
+```
+
+The report separates target pairs from non-target anchors and reports mismatch
+rates with Wilson 95% intervals on both train and validation splits. This is the
+mechanism-level evidence needed to explain when HyPO should differ from DPO.
+After KVS and AITA summaries exist, test whether stronger mismatch predicts a
+larger HyPO-DPO advantage:
+
+```bash
+python -m value_alignment.evaluation.analyze_hypo_advantage \
+  --aita-summary value_alignment/results/paper/aita_summary.json
+```
+
+This reports overall and per-model Pearson/Spearman correlations. Treat these as
+diagnostic associations rather than causal evidence because model/value cells
+are not fully independent.
+
+## 6. KVS Intrinsic Evaluation
 
 The evaluator uses all 2,916 test prompts, temperature 0.5, and three seeded
 stochastic runs. It supports an unmodified model or a PEFT adapter.
@@ -173,10 +235,18 @@ Run all 96 model conditions:
 sbatch value_alignment/slurm/evaluate_kvs_array.sh
 ```
 
+Evaluate a tagged training run with fixed generation seeds:
+
+```bash
+sbatch --export=ALL,CHECKPOINT_TAG=seed42,RESULT_TAG=seed42,EVAL_SEED=2026 \
+  value_alignment/slurm/evaluate_kvs_array.sh
+```
+
 After evaluation, create the complete comparison table:
 
 ```bash
-python -m value_alignment.evaluation.summarize_kvs_experiments
+python -m value_alignment.evaluation.summarize_kvs_experiments \
+  --run-tags seed42 seed43 seed44
 ```
 
 For every model, method, and target this reports:
@@ -191,10 +261,15 @@ the three stochastic runs, then reported as mean and sample standard deviation.
 The per-prompt majority vote remains in the raw result JSON as a diagnostic and
 is not used to collapse the three reported runs.
 
+The summary also reports a 95% cluster-bootstrap interval. The resampling unit
+is the original KVS `source_id`, so all 27 prompt/template variants and all three
+generation runs from one description stay together. A separate aggregate CSV
+reports mean and sample standard deviation across tagged training runs.
+
 SFT targets are paired with the matched `sft_baseline` control. DPO and HyPO
 targets are paired with the original base model.
 
-## 6. AITA Behavioral Evaluation
+## 7. AITA Behavioral Evaluation
 
 AITA scoring normalizes sequence probabilities over `NTA`, `Neutral`, and
 `YTA`. For each example:
@@ -219,6 +294,13 @@ Run the complete 90-job evaluation:
 sbatch value_alignment/slurm/evaluate_aita_array.sh
 ```
 
+For a tagged checkpoint set:
+
+```bash
+sbatch --export=ALL,CHECKPOINT_TAG=seed42,RESULT_TAG=seed42 \
+  value_alignment/slurm/evaluate_aita_array.sh
+```
+
 Aggregate the ten targets for one model/method:
 
 ```bash
@@ -231,7 +313,109 @@ python -m value_alignment.evaluation.summarize_aita_results \
 The aggregate is weighted by the number of AITA examples in each value group,
 matching the paper's uneven 2,902-example distribution.
 
-## 7. Optional Extensions
+For the complete repeated-run matrix, use:
+
+```bash
+python -m value_alignment.evaluation.summarize_aita_experiments \
+  --run-tags seed42 seed43 seed44
+```
+
+AITA summaries now include per-target and weighted bootstrap 95% intervals,
+both weighted and macro averages, the strict Probability Gain sensitivity
+metric, and Benjamini-Hochberg correction across the ten target-value tests.
+The repeated-run table reports mean and sample standard deviation across
+training seeds.
+
+## 8. General Capability Evaluation
+
+The capability evaluator wraps the official EleutherAI
+`lm-evaluation-harness`. It uses the task defaults: MMLU accuracy and GSM8K
+5-shot generation, with `exact_match,flexible-extract` as the primary GSM8K
+score used in the tutor paper.
+
+Smoke-test one base model on a small subset before launching full jobs:
+
+```bash
+sbatch --array=0 --export=ALL,LIMIT=10 \
+  value_alignment/slurm/evaluate_capabilities_array.sh
+```
+
+Run all base, SFT control, SFT, DPO, and HyPO conditions:
+
+```bash
+sbatch value_alignment/slurm/evaluate_capabilities_array.sh
+python -m value_alignment.evaluation.summarize_capability_results
+```
+
+Use `CHECKPOINT_TAG` and `RESULT_TAG` exactly as in KVS/AITA for repeated
+training runs. The summary reports every checkpoint's delta from its base model
+and the average across the ten target-specific checkpoints.
+
+## 9. Optional Extensions
+
+### Activation steering
+
+The activation-steering baseline follows the tutor paper's CAA protocol without
+updating model weights. For each target it computes
+`mean(h_negative) - mean(h_positive)` from KVS train and validation data at both
+decoder-block and attention-output sites. The held-out KVS test split is used
+only to select the layer with the largest target rating drop; that layer is then
+fixed before AITA evaluation.
+
+Run the four stages in order:
+
+```bash
+sbatch value_alignment/slurm/compute_steering_vectors_array.sh
+sbatch value_alignment/slurm/select_steering_layers_array.sh
+sbatch value_alignment/slurm/evaluate_kvs_steering_array.sh
+sbatch value_alignment/slurm/evaluate_aita_steering_array.sh
+
+python -m value_alignment.evaluation.summarize_kvs_experiments \
+  --methods steering_attn steering_block
+python -m value_alignment.evaluation.summarize_aita_experiments \
+  --methods steering_attn steering_block
+```
+
+Use small subsets before the full layer sweep:
+
+```bash
+sbatch --array=5 --export=ALL,VARIANT_MODE=first,MAX_DESCRIPTIONS=2 \
+  value_alignment/slurm/compute_steering_vectors_array.sh
+sbatch --array=5 --export=ALL,LAYERS="0 8 16 24",MAX_SAMPLES=32 \
+  value_alignment/slurm/select_steering_layers_array.sh
+```
+
+Steering is added at the final prompt position and at every subsequent decoding
+position. AITA uses the same intervention under teacher forcing from the final
+prompt position through the candidate label sequence. Neither vector creation
+nor layer selection reads AITA examples.
+
+### Bidirectional up-regulation
+
+Build rating-6 datasets after each model's baseline ratings are available, then
+train and evaluate the separate up-regulation checkpoints:
+
+```bash
+python -m value_alignment.prepare_kvs_sft \
+  --baseline-ratings value_alignment/data/baseline_ratings/qwen3-8b.json \
+  --output-root value_alignment/data/paper_sft/qwen3-8b \
+  --target-rating 6 --intervention up --skip-baseline-control
+
+sbatch value_alignment/slurm/train_sft_up_array.sh
+sbatch value_alignment/slurm/evaluate_kvs_up_array.sh
+sbatch value_alignment/slurm/evaluate_aita_up_array.sh
+
+python -m value_alignment.evaluation.summarize_kvs_experiments \
+  --results-root value_alignment/results/paper/kvs_up \
+  --methods sft_up --direction up
+python -m value_alignment.evaluation.summarize_aita_experiments \
+  --results-root value_alignment/results/paper/aita_up \
+  --methods sft_up --expected-direction less
+```
+
+The AITA Probability Gain definition stays down-oriented to match the paper, so
+negative raw gains are the intended up-regulation result. The summaries add an
+expected-direction effect whose positive sign always means success.
 
 - `generate_synthetic_preferences.py` creates persona-diverse preference pairs
   from KVS seeds using an OpenAI-compatible teacher endpoint. It requests a
@@ -242,6 +426,8 @@ matching the paper's uneven 2,902-example distribution.
   and top-k 20.
 - Mistral-7B-Instruct and Qwen2.5-7B-Instruct can replace a paper model through
   the same `--model` interface without changing data code.
+- Keep activation steering in separate columns from the parameter-updating
+  SFT/DPO/HyPO methods.
 
 ## Verification
 

@@ -20,6 +20,7 @@ from transformers import (
     TrainingArguments,
 )
 
+from value_alignment.experiment_utils import tagged_run_dir, write_run_manifest
 from value_alignment.model_utils import resolve_model_name
 
 
@@ -29,6 +30,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-file", type=Path, required=True)
     parser.add_argument("--eval-file", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--run-tag",
+        default="",
+        help="Optional isolated run name; outputs go under <output-dir>/runs/<run-tag>.",
+    )
     parser.add_argument("--model-aliases", type=Path, default=Path("value_alignment/configs/model_aliases.json"))
     parser.add_argument("--epochs", type=float, default=10.0)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -96,7 +102,26 @@ def make_training_args(args: argparse.Namespace) -> TrainingArguments:
 
 def main() -> None:
     args = parse_args()
+    args.output_dir = tagged_run_dir(args.output_dir, args.run_tag)
     resolved_model = resolve_model_name(args.model, args.model_aliases)
+    lora_alpha = args.lora_alpha or default_lora_alpha(resolved_model)
+    manifest_inputs = {
+        "train_data": args.train_file,
+        "eval_data": args.eval_file,
+        "model_aliases": args.model_aliases,
+    }
+    manifest_metadata = {
+        "trainer": "survey_sft",
+        "resolved_model": resolved_model,
+        "effective_lora_alpha": lora_alpha,
+        "effective_output_dir": str(args.output_dir),
+    }
+    write_run_manifest(
+        args.output_dir,
+        args,
+        manifest_inputs,
+        metadata=manifest_metadata,
+    )
     tokenizer = AutoTokenizer.from_pretrained(resolved_model, use_fast=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -128,7 +153,6 @@ def main() -> None:
         model.gradient_checkpointing_enable()
         model.config.use_cache = False
 
-    lora_alpha = args.lora_alpha or default_lora_alpha(resolved_model)
     model = get_peft_model(
         model,
         LoraConfig(
@@ -180,6 +204,13 @@ def main() -> None:
     final_dir = args.output_dir / "final"
     trainer.save_model(str(final_dir))
     tokenizer.save_pretrained(str(final_dir))
+    write_run_manifest(
+        args.output_dir,
+        args,
+        manifest_inputs,
+        metadata={**manifest_metadata, "final_model_dir": str(final_dir)},
+        status="completed",
+    )
 
 
 if __name__ == "__main__":

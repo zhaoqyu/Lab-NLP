@@ -27,6 +27,8 @@ MODEL_INDEX=$((TASK_INDEX / ${#VARIANTS[@]}))
 VARIANT_INDEX=$((TASK_INDEX % ${#VARIANTS[@]}))
 MODEL="${MODEL_OVERRIDE:-${MODELS[$MODEL_INDEX]}}"
 VARIANT="${VARIANT_OVERRIDE:-${VARIANTS[$VARIANT_INDEX]}}"
+RUN_TAG="${RUN_TAG:-}"
+validate_run_tag "$RUN_TAG"
 
 DATA_ROOT="${DATA_ROOT:-value_alignment/data/paper_sft/$MODEL}"
 if [[ "$VARIANT" == "baseline" ]]; then
@@ -35,6 +37,7 @@ else
   DATA_DIR="$DATA_ROOT/$VARIANT/down"
 fi
 OUTPUT_DIR="${OUTPUT_ROOT:-value_alignment/checkpoints/paper_sft}/$MODEL/$VARIANT"
+EFFECTIVE_OUTPUT_DIR="$(tagged_run_path "$OUTPUT_DIR" "$RUN_TAG")"
 
 for FILE in "$DATA_DIR/train.jsonl" "$DATA_DIR/eval.jsonl"; do
   if [[ ! -f "$FILE" ]]; then
@@ -44,9 +47,9 @@ for FILE in "$DATA_DIR/train.jsonl" "$DATA_DIR/eval.jsonl"; do
   fi
 done
 
-echo "Training paper SFT: model=$MODEL variant=$VARIANT"
+echo "Training paper SFT: model=$MODEL variant=$VARIANT seed=${SEED:-42} run_tag=${RUN_TAG:-legacy}"
 echo "Data: $DATA_DIR"
-echo "Output: $OUTPUT_DIR"
+echo "Output: $EFFECTIVE_OUTPUT_DIR"
 check_gpu_environment
 
 CMD=(
@@ -68,5 +71,8 @@ CMD=(
 )
 if [[ "${QLORA:-0}" == "1" ]]; then
   CMD+=(--load-in-4bit)
+fi
+if [[ -n "$RUN_TAG" ]]; then
+  CMD+=(--run-tag "$RUN_TAG")
 fi
 "${CMD[@]}"

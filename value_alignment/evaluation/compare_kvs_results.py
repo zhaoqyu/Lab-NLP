@@ -10,6 +10,7 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 
+from value_alignment.evaluation.statistics_utils import bootstrap_mean_interval
 from value_alignment.value_taxonomy import canonical_basic_value
 
 
@@ -35,6 +36,8 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("value_alignment/results/kvs_comparison.csv"),
     )
+    parser.add_argument("--bootstrap-replicates", type=int, default=2000)
+    parser.add_argument("--bootstrap-seed", type=int, default=42)
     return parser.parse_args()
 
 
@@ -102,7 +105,7 @@ def pair_rows_for_run(
         pairs.append(
             {
                 "id": row_id,
-                "source_id": base_row.get("source_id"),
+                "source_id": base_row.get("source_id") or row_id,
                 "value": base_row["value"],
                 "base_rating": float(base_rating),
                 "conditioned_rating": float(conditioned_rating),
@@ -122,18 +125,38 @@ def sample_std(values: list[float]) -> float:
     return statistics.stdev(values) if len(values) > 1 else 0.0
 
 
+def source_cluster_means(
+    pairs_by_run: list[list[dict]],
+    target_value: str,
+    *,
+    target_group: bool,
+    metric: str,
+) -> list[float]:
+    grouped: dict[str, list[float]] = defaultdict(list)
+    for pairs in pairs_by_run:
+        for pair in pairs:
+            if (pair["value"] == target_value) != target_group:
+                continue
+            grouped[str(pair["source_id"])].append(float(pair[metric]))
+    return [statistics.fmean(values) for _, values in sorted(grouped.items())]
+
+
 def compare_results(
     base_rows: list[dict],
     conditioned_rows: list[dict],
     target_value: str,
+    bootstrap_replicates: int = 2000,
+    bootstrap_seed: int = 42,
 ) -> dict:
     target = canonical_basic_value(target_value)
     base_by_id, conditioned_by_id, run_count = _paired_indexes(base_rows, conditioned_rows)
     run_results = []
+    pairs_by_run = []
     per_value_runs: dict[str, list[dict]] = defaultdict(list)
 
     for run_index in range(run_count):
         pairs = pair_rows_for_run(base_by_id, conditioned_by_id, run_index)
+        pairs_by_run.append(pairs)
         grouped: dict[str, list[dict]] = defaultdict(list)
         for pair in pairs:
             grouped[pair["value"]].append(pair)
@@ -210,6 +233,28 @@ def compare_results(
     ]
     target_counts = [float(row["target_paired_count"]) for row in run_results]
     other_counts = [float(row["other_values_paired_count"]) for row in run_results]
+    target_cluster_means = source_cluster_means(
+        pairs_by_run,
+        target,
+        target_group=True,
+        metric="rating_drop",
+    )
+    other_cluster_means = source_cluster_means(
+        pairs_by_run,
+        target,
+        target_group=False,
+        metric="absolute_change",
+    )
+    target_ci_low, target_ci_high = bootstrap_mean_interval(
+        target_cluster_means,
+        bootstrap_replicates,
+        f"{bootstrap_seed}:{target}:target",
+    )
+    other_ci_low, other_ci_high = bootstrap_mean_interval(
+        other_cluster_means,
+        bootstrap_replicates,
+        f"{bootstrap_seed}:{target}:other",
+    )
     return {
         "target_value": target,
         "num_runs": run_count,
@@ -220,8 +265,20 @@ def compare_results(
         "other_values_paired_count_sample_std": sample_std(other_counts),
         "target_value_rating_drop": statistics.fmean(target_drops),
         "target_value_rating_drop_sample_std": sample_std(target_drops),
+        "target_value_rating_drop_cluster_bootstrap_ci_95_low": target_ci_low,
+        "target_value_rating_drop_cluster_bootstrap_ci_95_high": target_ci_high,
+        "target_source_cluster_count": len(target_cluster_means),
         "other_values_mean_absolute_fluctuation": statistics.fmean(other_fluctuations),
         "other_values_mean_absolute_fluctuation_sample_std": sample_std(other_fluctuations),
+        "other_values_fluctuation_cluster_bootstrap_ci_95_low": other_ci_low,
+        "other_values_fluctuation_cluster_bootstrap_ci_95_high": other_ci_high,
+        "other_values_source_cluster_count": len(other_cluster_means),
+        "bootstrap": {
+            "replicates": bootstrap_replicates,
+            "seed": bootstrap_seed,
+            "cluster": "source_id",
+            "unit_note": "All prompt/template variants and stochastic runs remain within each source cluster.",
+        },
         "runs": run_results,
         "per_value": per_value,
     }
@@ -233,6 +290,8 @@ def main() -> None:
         load_rows(args.base),
         load_rows(args.conditioned),
         args.target_value,
+        args.bootstrap_replicates,
+        args.bootstrap_seed,
     )
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(

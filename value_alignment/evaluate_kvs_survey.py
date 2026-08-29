@@ -8,11 +8,13 @@ import csv
 import json
 import statistics
 from collections import defaultdict
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
+from value_alignment.activation_steering import SteeringHook, load_steering_selection
 from value_alignment.model_utils import resolve_model_name
 from value_alignment.survey_data import extract_rating, majority_rating
 
@@ -48,6 +50,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-samples", type=int, default=None, help="Optional smoke-test limit.")
+    parser.add_argument(
+        "--steering-selection",
+        type=Path,
+        default=None,
+        help="Optional JSON produced by select_steering_layer.py.",
+    )
     return parser.parse_args()
 
 
@@ -151,6 +159,19 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = load_model(model_name, args.adapter)
+    steering = None
+    steering_metadata = None
+    if args.steering_selection is not None:
+        if args.adapter is not None:
+            raise ValueError("Do not combine --adapter and --steering-selection in a baseline run.")
+        steering_metadata = load_steering_selection(args.steering_selection)
+        steering = SteeringHook(
+            model,
+            steering_metadata["site"],
+            steering_metadata["selected_layer"],
+            steering_metadata["vector"],
+            steering_metadata["strength"],
+        )
 
     with args.eval_file.open(encoding="utf-8") as handle:
         rows = [json.loads(line) for line in handle if line.strip()]
@@ -159,19 +180,22 @@ def main() -> None:
 
     all_ratings: list[list[int | None]] = [[] for _ in rows]
     all_generations: list[list[str]] = [[] for _ in rows]
-    for run_index in range(args.num_runs):
-        set_seed(args.seed + run_index)
-        ratings, generations = generate_run(
-            model,
-            tokenizer,
-            rows,
-            args.batch_size,
-            args.max_new_tokens,
-            args.temperature,
-        )
-        for index, (rating, generated) in enumerate(zip(ratings, generations, strict=True)):
-            all_ratings[index].append(rating)
-            all_generations[index].append(generated)
+    with steering if steering is not None else nullcontext():
+        for run_index in range(args.num_runs):
+            set_seed(args.seed + run_index)
+            ratings, generations = generate_run(
+                model,
+                tokenizer,
+                rows,
+                args.batch_size,
+                args.max_new_tokens,
+                args.temperature,
+            )
+            for index, (rating, generated) in enumerate(
+                zip(ratings, generations, strict=True)
+            ):
+                all_ratings[index].append(rating)
+                all_generations[index].append(generated)
 
     scored_rows = []
     for row, ratings, generations in zip(rows, all_ratings, all_generations, strict=True):
@@ -189,6 +213,15 @@ def main() -> None:
     result = {
         "model": model_name,
         "adapter": str(args.adapter) if args.adapter is not None else None,
+        "steering": (
+            {
+                key: value
+                for key, value in steering_metadata.items()
+                if key != "vector"
+            }
+            if steering_metadata is not None
+            else None
+        ),
         "settings": {
             "num_runs": args.num_runs,
             "temperature": args.temperature,

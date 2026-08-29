@@ -65,3 +65,22 @@ validate_array_index() {
     return 2
   fi
 }
+
+validate_run_tag() {
+  local run_tag="$1"
+  if [[ -n "$run_tag" && ! "$run_tag" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "Invalid run tag: $run_tag" >&2
+    echo "Use only letters, numbers, dots, underscores, and hyphens." >&2
+    return 2
+  fi
+}
+
+tagged_run_path() {
+  local base_path="$1"
+  local run_tag="$2"
+  if [[ -n "$run_tag" ]]; then
+    printf '%s/runs/%s\n' "$base_path" "$run_tag"
+  else
+    printf '%s\n' "$base_path"
+  fi
+}
