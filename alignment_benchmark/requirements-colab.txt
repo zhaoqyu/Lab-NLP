@@ -1,0 +1,24 @@
+# HyPO's official implementation is based on this TRL/Transformers stack.
+transformers==4.45.2
+trl==0.9.6
+accelerate==1.6.0
+peft==0.13.2
+bitsandbytes==0.45.5
+datasets==3.2.0
+sentence-transformers==3.3.1
+openai>=1.55,<3
+tenacity>=9,<10
+pydantic>=2.8,<3
+PyYAML>=6,<7
+typer>=0.12,<1
+rich>=13,<14
+pandas==2.2.3
+pyarrow>=17,<20
+numpy>=1.26,<2.1
+scipy>=1.13,<2
+statsmodels>=0.14,<1
+matplotlib>=3.9,<4
+seaborn>=0.13,<1
+tensorboard>=2.17,<3
+pytest>=8,<9
+nbformat>=5.10,<6
