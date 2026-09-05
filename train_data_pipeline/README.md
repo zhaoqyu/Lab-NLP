@@ -9,9 +9,9 @@ gets us from nothing to the two CSVs the report and the presentation are waiting
 
 ```bash
 cd train_data_pipeline
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r value_alignment/requirements.txt
-nohup bash run_priority_pipeline.sh > run.log 2>&1 &
+nohup python3 run_priority_pipeline.py > run.log 2>&1 &
 tail -f run.log
 ```
 
@@ -19,13 +19,31 @@ Walk away. Come back in 6-12 hours (see the timing table below) to
 `value_alignment/results/paper/kvs_summary.csv` and
 `value_alignment/results/paper/aita_summary.csv`.
 
+**Two interchangeable ways to run this** — same stages, same output, same `.done`
+markers, pick whichever actually runs on your server:
+- `python3 run_priority_pipeline.py` — **use this one if in doubt.** Needs nothing but
+  the Python interpreter you already have (the whole pipeline is Python anyway). No
+  shell scripting involved, so it doesn't care whether bash is installed, whether the
+  script file has its execute bit set, or whether the filesystem is mounted `noexec` —
+  all common reasons a `.sh` file refuses to run on a locked-down shared/HPC server with
+  no root access.
+- `bash run_priority_pipeline.sh` — the original shell version. Identical behavior,
+  use it if your server is a normal box where bash scripts just work.
+
+Both write to the exact same `value_alignment/slurm_logs/priority_run/` markers, so you
+can even start with one and resume with the other if you switch servers mid-run.
+
 ## Everything in this folder
 
 ```
 train_data_pipeline/
   README.md                        <- this file
-  run_priority_pipeline.sh         <- the one script you run. Everything else is
-                                       either an input it reads or code it calls.
+  run_priority_pipeline.py         <- RECOMMENDED entry point. Pure Python, no shell
+                                       needed at all -- run it with `python3
+                                       run_priority_pipeline.py`.
+  run_priority_pipeline.sh         <- the same pipeline as a bash script, for servers
+                                       where bash scripts run normally. Functionally
+                                       identical to the .py version above; pick one.
   dataset/
     kvs_data_new.json              <- KVS value survey: 378/108/108 train/eval/test
     aita_dataset_reduced.json      <- AITA moral-dilemma posts, evaluation-only
@@ -59,9 +77,10 @@ train_data_pipeline/
 ```
 
 This is a full copy of the `value_alignment/` package as it exists on branch
-`mike-colab-valuebench` of this repo, plus two additions: `train_extra_methods.py`
-(SimPO + KTO, did not exist before) and `run_priority_pipeline.sh` (the orchestration
-script, also new). Two files got a one-line edit each
+`mike-colab-valuebench` of this repo, plus three additions: `train_extra_methods.py`
+(SimPO + KTO, did not exist before) and the two orchestration scripts,
+`run_priority_pipeline.py` and `run_priority_pipeline.sh` (both new, functionally
+identical, pick whichever runs on your server). Two files got a one-line edit each
 (`evaluation/summarize_kvs_experiments.py`, `evaluation/summarize_aita_experiments.py`)
 so their `--methods` flag recognizes `simpo`/`kto` in addition to the methods that were
 already there. Nothing else was touched. Confirmed by running, from inside this exact
@@ -112,14 +131,14 @@ inside the script — that has to be fixed at the network/proxy level first.
 ```bash
 cd train_data_pipeline
 
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r value_alignment/requirements.txt
 
 # recommended: a ~10-15 minute smoke test on 1 value / 1 epoch before the full run,
 # so a bug shows up in minutes instead of after hours of real training
 VALUES_STR="security" PREF_EPOCHS=1 SFT_EPOCHS=1 EVAL_NUM_RUNS=1 \
-  bash run_priority_pipeline.sh
+  python3 run_priority_pipeline.py
 cat value_alignment/slurm_logs/priority_run/status.tsv   # everything should say OK
 
 # if the smoke test is all OK, wipe its markers/outputs and do the real run
@@ -127,12 +146,15 @@ rm -rf value_alignment/slurm_logs/priority_run value_alignment/checkpoints \
        value_alignment/results value_alignment/data/paper_sft \
        value_alignment/data/baseline_ratings
 
-nohup bash run_priority_pipeline.sh > run.log 2>&1 &
+nohup python3 run_priority_pipeline.py > run.log 2>&1 &
 tail -f run.log
 ```
 
 `nohup ... &` keeps it running if the SSH session drops. That's the whole job — start it
-and walk away.
+and walk away. (If bash scripts run fine on your server and you'd rather use the shell
+version, swap `python3 run_priority_pipeline.py` for `bash run_priority_pipeline.sh`
+everywhere above — both understand the same environment variables and write to the same
+`.done` markers.)
 
 ## What happens, in order
 
@@ -153,8 +175,8 @@ and walk away.
 Every one of these is a separate stage with its own `.done` marker under
 `value_alignment/slurm_logs/priority_run/<stage>.done` and its own log at
 `value_alignment/slurm_logs/priority_run/<stage>.log`. **Re-running the exact same
-`bash run_priority_pipeline.sh` command resumes from wherever it left off** instead of
-starting over — safe after a disconnect, an OOM on one job, or a reboot. A stage that
+command (`python3 run_priority_pipeline.py` or `bash run_priority_pipeline.sh`, either
+one) resumes from wherever it left off** instead of starting over — safe after a disconnect, an OOM on one job, or a reboot. A stage that
 fails is logged and skipped, not fatal to the rest of the run: check
 `value_alignment/slurm_logs/priority_run/status.tsv` (one line per stage: `OK`, `FAIL`,
 or `SKIP`) to see the full picture at a glance, and the matching `.log` file for any
@@ -219,12 +241,12 @@ environment problem before committing to the full run.
 
 ## Adjusting scope
 
-Every knob is an environment variable read at the top of `run_priority_pipeline.sh`:
+Every knob is an environment variable, read the same way by both entry points:
 
 ```bash
 VALUES_STR="universalism security benevolence self_direction power tradition" \
 MODEL=qwen3-8b SEED=43 \
-  bash run_priority_pipeline.sh
+  python3 run_priority_pipeline.py
 ```
 
 Available: `MODEL`, `VALUES_STR` (space-separated basic Schwartz values, lowercase with
@@ -233,6 +255,13 @@ underscores), `SEED`, `SFT_EPOCHS`, `PREF_EPOCHS`, `LORA_R`, `LORA_ALPHA`, `BATC
 
 ## Troubleshooting
 
+- **The `.sh` script won't run at all, even with `bash run_priority_pipeline.sh`** —
+  don't debug it, just switch to `python3 run_priority_pipeline.py` instead (same
+  environment variables, same output, same `.done` markers). This is exactly what it's
+  for: a shared/HPC server with no root access, a `noexec`-mounted home or scratch
+  partition, or no bash installed will all block a `.sh` file in ways a plain `python3
+  script.py` invocation never hits, since nothing is trying to execute the file itself
+  as a program — only the Python interpreter is.
 - **CUDA out of memory during training** — set `QLORA=1` if it isn't already (it's the
   default), lower `LORA_R` (e.g. `32`), or lower `BATCH_SIZE`/raise `GRAD_ACCUM` to keep
   the same effective batch size with less peak memory.
