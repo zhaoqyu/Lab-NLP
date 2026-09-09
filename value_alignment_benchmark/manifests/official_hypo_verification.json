@@ -1,0 +1,7 @@
+{
+  "commit": "e552477308a3f5ac518a46b7f56fe77f5a3a994f",
+  "core_loss_reimplemented_by_notebook": false,
+  "hypo_config_sha256": "0d6764d8c24655038a5c2e1c415559cfbc05d0d3b2c3fe12f45c0640a4e8ab24",
+  "hypo_trainer_sha256": "b30b2d5937535c389b565a5fe7b52d07b73fa9fd3a4aec4f8361435e4239f832",
+  "repository": "https://github.com/tmllab/2026_ICLR_HyPO.git"
+}

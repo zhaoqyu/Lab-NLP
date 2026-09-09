@@ -1,0 +1,6 @@
+{
+  "aita_path": "/root/autodl-tmp/value_alignment_benchmark/input/aita_dataset_reduced.json",
+  "aita_sha256": "00638b6d46d13eb56cfa448b6421722e15d614dfc7134f6336d750f70dea2792",
+  "kvs_path": "/root/autodl-tmp/value_alignment_benchmark/input/kvs_data_new.json",
+  "kvs_sha256": "5a03b1e5b607c634cd83711097a2a02b48ba564d36477b4c1a6669a8cab827d2"
+}

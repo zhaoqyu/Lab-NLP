@@ -1,0 +1,15 @@
+\begin{tabular}{lrrrrrrrrrl}
+\toprule
+method & recorded\_prepare\_train\_seconds & peak\_training\_allocated\_GiB & observed\_target\_runs & target\_drop & drift & selectivity & aita\_primary & aita\_strict & cost\_coverage\_complete & pareto\_status \\
+\midrule
+caa\_attention & 1043.6981 & 5.5602 & 10 & 0.1763 & 0.1005 & 0.0758 & -0.0262 & -0.0140 & True & dominated \\
+caa\_residual & 1018.6298 & 5.5602 & 10 & 0.3120 & 0.2347 & 0.0773 & -0.0267 & -0.0027 & True & dominated \\
+dpo & 891.3402 & 8.8453 & 10 & 0.0000 & 0.0219 & -0.0219 & 0.0071 & 0.0042 & True & dominated \\
+hypo & 892.6357 & 8.8452 & 10 & 0.0090 & 0.0214 & -0.0125 & 0.0041 & 0.0026 & True & non\_dominated \\
+ipo & 893.9823 & 8.8443 & 10 & 0.0143 & 0.0252 & -0.0109 & 0.0047 & 0.0026 & True & non\_dominated \\
+kto & 452.9222 & 15.0236 & 10 & 0.0002 & 0.0194 & -0.0192 & 0.0018 & 0.0004 & True & non\_dominated \\
+orpo & 263.8870 & 15.0224 & 10 & 0.0150 & 0.0223 & -0.0074 & 0.0018 & 0.0013 & True & non\_dominated \\
+sft & 576.8460 & 9.9566 & 10 & 1.0221 & 0.2797 & 0.7425 & -0.0154 & -0.0026 & True & non\_dominated \\
+simpo & 603.1148 & 14.9678 & 10 & 0.0107 & 0.0236 & -0.0128 & 0.0072 & 0.0048 & True & non\_dominated \\
+\bottomrule
+\end{tabular}

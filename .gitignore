@@ -1,0 +1,164 @@
+# ============================================================
+# Python
+# ============================================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ============================================================
+# Jupyter
+# ============================================================
+
+.ipynb_checkpoints/
+
+# ============================================================
+# Local Python / Conda environments
+# ============================================================
+
+/conda/
+.venv/
+venv/
+env/
+
+# ============================================================
+# Downloaded pretrained models
+# ============================================================
+
+/Qwen2.5-7B-Instruct/
+/all-MiniLM-L6-v2/
+
+# Large model files
+*.safetensors
+*.ckpt
+
+# ============================================================
+# External repositories / manually built dependencies
+# ============================================================
+
+/flash-attention/
+
+# ============================================================
+# Value Alignment Benchmark - duplicate/archive project
+# ============================================================
+
+/value_alignment_benchmark__/
+/value_alignment_benchmark.zip
+
+# ============================================================
+# Value Alignment Benchmark - generated experiment artifacts
+# ============================================================
+
+/value_alignment_benchmark/checkpoints/
+/value_alignment_benchmark/logs/
+/value_alignment_benchmark/baselines/
+/value_alignment_benchmark/steering/
+
+# Raw/generated results
+/value_alignment_benchmark/results/raw/
+
+# Generated/intermediate processed data
+/value_alignment_benchmark/data/
+
+# Temporary directories
+/value_alignment_benchmark/tmp/
+/value_alignment_benchmark/temp/
+
+# ============================================================
+# Hugging Face / Trainer checkpoints
+# ============================================================
+
+checkpoint-*/
+**/checkpoint-*/
+
+optimizer.pt
+scheduler.pt
+rng_state.pth
+trainer_state.json
+training_args.bin
+
+# ============================================================
+# Experiment temporary/status files
+# ============================================================
+
+*.DONE
+*.parquet.parts/
+*.tmp
+*.temp
+
+# ============================================================
+# Logs
+# ============================================================
+
+*.log
+logs/
+
+# ============================================================
+# Cache directories
+# ============================================================
+
+.cache/
+**/.cache/
+
+# Hugging Face cache
+huggingface/
+hub/
+
+# ============================================================
+# Archives
+# ============================================================
+
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# ============================================================
+# Temporary serialization
+# ============================================================
+
+*.pkl
+*.pickle
+
+# ============================================================
+# Tree / debug output
+# ============================================================
+
+tree.txt
+tree*.txt
+folder_tree.txt
+
+# ============================================================
+# Build artifacts
+# ============================================================
+
+build/
+dist/
+*.egg-info/
+*.so
+
+# ============================================================
+# IDE / OS
+# ============================================================
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ============================================================
+# Secrets / environment variables
+# ============================================================
+
+.env
+.env.*
+!.env.example
+
+*.key
+*.pem
+credentials.json
+secrets.json

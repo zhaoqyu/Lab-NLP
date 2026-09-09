@@ -1,0 +1,14 @@
+{
+  "created_utc": "2026-09-09T02:22:58.161455+00:00",
+  "root": "/root/autodl-tmp/value_alignment_benchmark",
+  "namespace": "paper_0726c6bf1530_7df3e726",
+  "seeds": [
+    13
+  ],
+  "draws": 10000,
+  "analysis_seed": 20260909,
+  "verify_result_hashes": true,
+  "intervals": "95% conditional cluster Bayesian bootstrap",
+  "training_or_inference_performed": false,
+  "optional_artifact_gaps": []
+}
